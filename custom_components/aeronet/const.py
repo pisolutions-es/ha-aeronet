@@ -23,7 +23,7 @@ INVERSION_WEB_SERVICE_URL = (
 )
 
 USER_AGENT = (
-    "home-assistant-aeronet/1.0 "
+    "home-assistant-aeronet/0.3 "
     "(NASA AERONET custom integration; +https://github.com/home-assistant/core)"
 )
 

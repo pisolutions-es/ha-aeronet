@@ -174,10 +174,12 @@ def display_to_site_name(display: str) -> str:
     return _DISPLAY_SUFFIX_RE.sub("", normalize_site(display))
 
 def parse_site_list(body: str) -> list[Site]:
-    """Parse aeronet_locations_v3.txt.
+    """Parse an AERONET site-list file (v3 or the active v3921 variant).
 
     Layout: line 1 'AERONET_Database_Site_List,...' banner, line 2 CSV header
-    (Site_Name,Longitude(...),Latitude(...),Elevation(...)), then ~2000 rows.
+    (Site_Name,Longitude(...),Latitude(...),Elevation(...)), then one row per
+    station. Both official files share this layout; only the row population
+    differs (all historical vs currently active stations).
     """
     if is_help_html(body):
         raise AeronetParamError("site list request returned HTML help page")
