@@ -132,6 +132,47 @@ def _canonical_site(site: str) -> str:
     return "_".join(normalize_site(site).lower().replace(" ", "_").split("_"))
 
 
+# Suffix pattern for disambiguating genuinely duplicated station names in
+# the dropdown (see dedupe_display_names).
+import re as _re
+
+_DISPLAY_SUFFIX_RE = _re.compile(r" \(-?\d+\.\d{2}, ?-?\d+\.\d{2}\)$")
+
+
+def dedupe_display_names(sites) -> list[str]:
+    """Sorted, unique display names for the station dropdown/select.
+
+    Plain duplicates (the same station listed twice) collapse to one entry.
+    Genuinely *different* stations that share a name are kept apart with a
+    coordinate suffix `` (lat, lon)`` so a user can tell them apart and the
+    real name can be recovered with ``display_to_site_name``. The active
+    v3921 list has no duplicate names (verified 2026-09-16); this is
+    defensive for the full historical list.
+    """
+    by_name: dict[str, set[str]] = {}
+    for s in sites:
+        name = normalize_site(s.name)
+        if name:
+            by_name.setdefault(name, set()).add(f"{s.latitude:.2f},{s.longitude:.2f}")
+    display: list[str] = []
+    for name, coords in by_name.items():
+        if len(coords) == 1:
+            display.append(name)
+        else:
+            display.extend(f"{name} ({c})" for c in sorted(coords))
+    return sorted(display)
+
+
+def display_to_site_name(display: str) -> str:
+    """Reverse a deduped display label back to the real AERONET station name.
+
+    A coordinate suffix added by ``dedupe_display_names`` is stripped; every
+    other label passes through ``normalize_site`` unchanged. Selecting a
+    suffixed option therefore still queries AERONET with the exact name the
+    web service expects.
+    """
+    return _DISPLAY_SUFFIX_RE.sub("", normalize_site(display))
+
 def parse_site_list(body: str) -> list[Site]:
     """Parse aeronet_locations_v3.txt.
 

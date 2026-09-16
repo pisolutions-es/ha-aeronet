@@ -1,0 +1,6 @@
+AERONET_Database_Site_List,Num=0,Date_Generated=01:01:2026
+Site_Name,Longitude(decimal_degrees),Latitude(decimal_degrees),Elevation(meters)
+TestStationA,1.000000,40.000000,100.000000
+TestStationB,2.000000,41.000000,200.000000
+TestStationA,1.000000,40.000000,100.000000
+TestStationA,5.000000,43.000000,500.000000
