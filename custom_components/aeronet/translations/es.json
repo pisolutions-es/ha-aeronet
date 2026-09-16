@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NASA AERONET",
+        "description": "Configuración de la fuente de datos AERONET. La estación se elige después con la entidad select 'Estación'.",
+        "data": {
+          "site": "Estación inicial",
+          "email": "Email (opcional, AERONET lo recomienda para el web service)",
+          "level": "Nivel de datos",
+          "interval_min": "Frecuencia de actualización (minutos)"
+        }
+      },
+      "init": {
+        "title": "Opciones de AERONET",
+        "data": {
+          "email": "Email (opcional)",
+          "level": "Nivel de datos",
+          "interval_min": "Frecuencia de actualización (minutos)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Esta estación ya está configurada."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "aod": {
+        "name": "AOD"
+      },
+      "aod_24h": {
+        "name": "AOD media 24h"
+      },
+      "last_data": {
+        "name": "Último dato"
+      },
+      "latitude": {
+        "name": "Latitud"
+      },
+      "longitude": {
+        "name": "Longitud"
+      },
+      "elevation": {
+        "name": "Elevación"
+      }
+    },
+    "select": {
+      "site": {
+        "name": "Estación"
+      }
+    }
+  }
+}

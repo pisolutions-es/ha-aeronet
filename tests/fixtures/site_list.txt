@@ -1,0 +1,8 @@
+AERONET_Database_Site_List,Num=6,Date_Generated=16:09:2026
+Site_Name,Longitude(decimal_degrees),Latitude(decimal_degrees),Elevation(meters)
+Cuiaba,-56.070214,-15.555244,234.000000
+Barcelona,2.112060,41.389250,125.000000
+Evora,-7.911500,38.567833,293.000000
+Granada,-3.605000,37.164000,680.000000
+Madrid,-3.723950,40.451900,680.000000
+Tenerife,-16.633333,28.033333,52.000000

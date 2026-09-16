@@ -1,0 +1,12 @@
+{
+  "domain": "aeronet",
+  "name": "NASA AERONET",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://aeronet.gsfc.nasa.gov/print_web_data_help_v3_new.html",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "1.0.0"
+}
