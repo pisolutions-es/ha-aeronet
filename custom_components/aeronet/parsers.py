@@ -8,7 +8,10 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import logging
 from dataclasses import dataclass, field
+
+_LOGGER = logging.getLogger(__name__)
 
 NODATA = -999.0
 
@@ -27,6 +30,13 @@ class AeronetParamError(AeronetError):
 
 class AeronetEmptyError(AeronetError):
     """Response is not a recognizable AERONET CSV payload at all."""
+
+
+class AeronetSiteMismatchError(AeronetError):
+    """Rows belong to a different site (or several sites mixed) instead of
+    the one requested. AERONET silently drops a malformed/blank ``site``
+    parameter and returns *all* stations, so this must be treated as an
+    error rather than parsed as data."""
 
 
 @dataclass
@@ -68,6 +78,23 @@ def is_help_html(body: str) -> bool:
         or "<!doctype html" in lowered
         or "aeronet version 3 web service help" in lowered
     )
+
+
+def normalize_site(site: str) -> str:
+    """Canonical station name: no surrounding whitespace.
+
+    AERONET station names never contain spaces (they use underscores), and
+    the web service silently *drops* a ``site`` parameter that does not match
+    an exact station name — returning every station's rows mixed together.
+    Every boundary that carries a station name must pass it through here.
+    """
+    return (site or "").strip()
+
+
+def _canonical_site(site: str) -> str:
+    """Comparison form of a station name: case-insensitive, and any run of
+    whitespace/underscores collapsed to a single underscore."""
+    return "_".join(normalize_site(site).lower().replace(" ", "_").split("_"))
 
 
 def parse_site_list(body: str) -> list[Site]:
@@ -128,11 +155,17 @@ def _find_data_header(lines: list[str]) -> int | None:
     return None
 
 
-def parse_data_csv(body: str) -> AeronetData:
+def parse_data_csv(body: str, expected_site: str | None = None) -> AeronetData:
     """Parse a Level 1.x/2.0 all-points AOD CSV response.
 
     Format: 5+ banner lines, a header line starting 'AERONET_Site,Date(...)',
     then one row per measurement. -999.0 means no data.
+
+    When ``expected_site`` is given, the parsed rows are checked against it:
+    the web service silently ignores an unmatched ``site`` parameter and
+    replies with every station's rows, so a multi-site payload or a payload
+    from another station raises AeronetSiteMismatchError instead of being
+    returned as if it were the requested site's data.
     """
     if is_help_html(body):
         raise AeronetParamError(
@@ -159,10 +192,12 @@ def parse_data_csv(body: str) -> AeronetData:
         elevation=NODATA,
     )
     points: list[AodPoint] = []
+    sites_seen: set[str] = set()
     for row in reader:
         if len(row) < len(header) or not row[0].strip():
             continue
         site_name = row[0].strip()
+        sites_seen.add(_canonical_site(site_name))
         try:
             d = dt.datetime.strptime(row[idx["Date(dd:mm:yyyy)"]], "%d:%m:%Y")
             t = dt.datetime.strptime(row[idx["Time(hh:mm:ss)"]], "%H:%M:%S")
@@ -200,6 +235,31 @@ def parse_data_csv(body: str) -> AeronetData:
         # Header present but zero rows: valid response, no data in window.
         meta.name = "unknown"
     points.sort(key=lambda p: p.time)
+
+    expected = normalize_site(expected_site or "")
+    if expected and sites_seen:
+        if len(sites_seen) > 1:
+            sample = ", ".join(sorted(sites_seen)[:5])
+            _LOGGER.warning(
+                "AERONET returned %d mixed sites (expected '%s'); sample: %s",
+                len(sites_seen), expected, sample,
+            )
+            raise AeronetSiteMismatchError(
+                f"AERONET returned data for {len(sites_seen)} different "
+                f"stations instead of the requested '{expected}' — the site "
+                "parameter was not matched by the web service"
+            )
+        returned = next(iter(sites_seen))
+        if returned != _canonical_site(expected):
+            _LOGGER.warning(
+                "AERONET returned site '%s' but '%s' was requested",
+                meta.name, expected,
+            )
+            raise AeronetSiteMismatchError(
+                f"AERONET returned data for site '{meta.name}' instead of "
+                f"the requested '{expected}' — the site parameter was not "
+                "matched by the web service"
+            )
     return AeronetData(meta=meta, points=points)
 
 

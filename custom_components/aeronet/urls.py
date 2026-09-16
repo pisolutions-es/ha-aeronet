@@ -18,7 +18,12 @@ def build_data_url(
 
     Window = last DATA_WINDOW_DAYS days (UTC), inclusive of today, as required
     by the web service's year/month/day .. year2/month2/day2 parameters.
+
+    The site name is stripped before encoding: AERONET ignores a ``site``
+    value that is not an exact station name (a trailing space is enough),
+    and the resulting response silently contains *all* stations.
     """
+    site = (site or "").strip()
     start = (now - dt.timedelta(days=DATA_WINDOW_DAYS - 1)).date()
     end = now.date()
     if level not in LEVELS:

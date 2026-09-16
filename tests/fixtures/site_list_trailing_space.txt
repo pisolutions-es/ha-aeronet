@@ -1,0 +1,5 @@
+AERONET_Database_Site_List,Num=3,Date_Generated=16:09:2026
+Site_Name,Longitude(decimal_degrees),Latitude(decimal_degrees),Elevation(meters)
+Valladolid ,-4.705830,41.663600,705.000000
+Tucson,-110.938950,32.230540,791.000000
+  Madrid  ,-3.723950,40.451900,680.000000

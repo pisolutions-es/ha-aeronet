@@ -1,0 +1,9 @@
+AERONET Data Download (Version 3 Direct Sun)
+AERONET Version 3
+Version 3: AOD Level 1.5
+Notice line
+Contact: PI=Someone
+AERONET_Site,Date(dd:mm:yyyy),Time(hh:mm:ss),AOD_500nm,Site_Latitude(Degrees),Site_Longitude(Degrees),Site_Elevation(m)
+Tucson,10:09:2026,07:03:05,0.120000,32.230540,-110.938950,791.000000
+Valladolid,10:09:2026,07:10:05,0.080000,41.663600,-4.705830,705.000000
+Tucson,11:09:2026,07:03:05,0.130000,32.230540,-110.938950,791.000000

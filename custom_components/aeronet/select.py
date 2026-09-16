@@ -59,13 +59,17 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         sites = self.coordinator.data or []
-        names = sorted({s.name for s in sites})
-        current = self._data_coord.site
+        names = sorted({s.name.strip() for s in sites if s.name.strip()})
+        current = self._data_coord.site.strip()
         if current and current not in names:
             names.append(current)
         return names
 
     async def async_select_option(self, option: str) -> None:
+        # Station names must be exact (AERONET silently ignores a site value
+        # with stray whitespace and returns *all* stations), so normalize
+        # before persisting or requesting.
+        option = option.strip()
         self._attr_current_option = option
         self.async_write_ha_state()
         # Persist so the choice survives restarts, then re-poll the new site.

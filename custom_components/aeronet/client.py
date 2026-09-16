@@ -65,8 +65,11 @@ class AeronetClient:
         )
 
     async def fetch_data(self, site: str, now: dt.datetime) -> AeronetData:
+        site = (site or "").strip()
         url = self._data_url(site, now)
         _LOGGER.debug("AERONET fetch: %s", url)
         body = await self._get_text(url)
-        data = parse_data_csv(body)  # raises AeronetParamError on help HTML
+        # expected_site guards against the web service silently ignoring an
+        # unmatched site parameter and replying with every station's rows.
+        data = parse_data_csv(body, expected_site=site)
         return data

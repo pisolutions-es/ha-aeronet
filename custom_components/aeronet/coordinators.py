@@ -71,7 +71,7 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
         self._session = session
         self._email = email
         self._level = level
-        self.site = site
+        self.site = site.strip()
         super().__init__(
             hass,
             _LOGGER,
@@ -104,6 +104,13 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(str(err)) from err
 
     async def set_site(self, site: str) -> None:
-        if site != self.site:
-            self.site = site
-            await self.async_request_refresh()
+        site = (site or "").strip()
+        changed = site != self.site
+        self.site = site
+        if changed:
+            # Drop data from the previous station so sensors never render it
+            # while the new fetch is in flight.
+            self.data = None
+        # Force an immediate refresh (not the debounced request_refresh) so
+        # the sensors show the new station right away, even if unchanged.
+        await self.async_refresh()

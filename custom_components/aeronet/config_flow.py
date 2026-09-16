@@ -35,7 +35,7 @@ def _site_options(hass) -> list[str] | None:
     except Exception:  # pragma: no cover - defensive
         return None
     if sites:
-        return sorted({s.name for s in sites})
+        return sorted({s.name.strip() for s in sites if s.name.strip()})
     return None
 
 
@@ -46,7 +46,8 @@ class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         if user_input is not None:
-            site = user_input.get(CONF_SITE) or DEFAULT_SITE
+            site = (user_input.get(CONF_SITE) or DEFAULT_SITE).strip()
+            user_input = {**user_input, CONF_SITE: site}
             await self.async_set_unique_id(f"aeronet_{site}")
             self._abort_if_unique_id_configured()
             return self.async_create_entry(title=f"AERONET · {site}", data=user_input)

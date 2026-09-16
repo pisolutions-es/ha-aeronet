@@ -49,6 +49,36 @@ class TestSiteListParser(unittest.TestCase):
         sites = parsers.parse_site_list(body)
         self.assertEqual([s.name for s in sites], ["Good"])
 
+    def test_site_names_are_stripped(self):
+        # Regression: the live CSV has names like 'Valladolid ' with trailing
+        # space; the parser must yield clean names.
+        sites = parsers.parse_site_list(fixture("site_list_trailing_space.txt"))
+        by_name = {s.name: s for s in sites}
+        self.assertEqual(sorted(by_name), ["Madrid", "Tucson", "Valladolid"])
+        for name in by_name:
+            self.assertEqual(name, name.strip())
+            self.assertNotIn(" ", name)
+        self.assertAlmostEqual(by_name["Valladolid"].latitude, 41.6636, places=4)
+
+
+class TestNormalizeSite(unittest.TestCase):
+    def test_normalize_site(self):
+        self.assertEqual(parsers.normalize_site("Valladolid "), "Valladolid")
+        self.assertEqual(parsers.normalize_site("  Valladolid"), "Valladolid")
+        self.assertEqual(parsers.normalize_site(" Valladolid "), "Valladolid")
+        self.assertEqual(parsers.normalize_site("Valladolid"), "Valladolid")
+        self.assertEqual(parsers.normalize_site(""), "")
+        self.assertEqual(parsers.normalize_site(None), "")
+
+    def test_select_options_have_no_whitespace(self):
+        # Mirrors select.AeronetSiteSelect.options: option values sent to the
+        # AERONET web service must never carry stray whitespace.
+        sites = parsers.parse_site_list(fixture("site_list_trailing_space.txt"))
+        options = sorted({s.name.strip() for s in sites if s.name.strip()})
+        self.assertEqual(options, ["Madrid", "Tucson", "Valladolid"])
+        for opt in options:
+            self.assertEqual(opt, opt.strip())
+
 
 class TestDataCsvParser(unittest.TestCase):
     def test_parse_real_madrid_csv(self):
@@ -123,6 +153,48 @@ class TestDataCsvParser(unittest.TestCase):
         self.assertEqual(len(data.points), 1)
         self.assertEqual(data.points[0].wavelength, "AOD_551nm")
         self.assertAlmostEqual(data.points[0].aod, 0.25)
+
+
+class TestSiteMismatchGuard(unittest.TestCase):
+    """AERONET silently drops an unmatched site parameter and replies with
+    every station's rows; the parser must reject such payloads."""
+
+    def test_multi_site_payload_rejected(self):
+        body = fixture("data_multi_site.csv")
+        with self.assertRaises(parsers.AeronetSiteMismatchError):
+            parsers.parse_data_csv(body, expected_site="Valladolid")
+
+    def test_other_single_site_rejected(self):
+        body = fixture("data_other_site.csv")
+        with self.assertRaises(parsers.AeronetSiteMismatchError):
+            parsers.parse_data_csv(body, expected_site="Valladolid")
+
+    def test_matching_site_accepted(self):
+        body = fixture("data_other_site.csv")
+        data = parsers.parse_data_csv(body, expected_site="Tucson")
+        self.assertEqual(data.meta.name, "Tucson")
+        self.assertEqual(len(data.points), 2)
+
+    def test_trailing_space_in_expected_site_still_matches(self):
+        # The requested name may arrive dirty; comparison must be tolerant.
+        body = fixture("data_other_site.csv")
+        data = parsers.parse_data_csv(body, expected_site="Tucson ")
+        self.assertEqual(data.meta.name, "Tucson")
+
+    def test_no_expected_site_keeps_legacy_behaviour(self):
+        # Without expected_site the parser stays permissive (used by tools).
+        data = parsers.parse_data_csv(fixture("data_multi_site.csv"))
+        self.assertEqual(len(data.points), 3)
+
+    def test_empty_payload_with_expected_site_ok(self):
+        body = fixture("data_madrid.csv")
+        lines = body.splitlines()
+        header_i = next(
+            i for i, l in enumerate(lines) if l.startswith("AERONET_Site,Date(")
+        )
+        empty = "\n".join(lines[: header_i + 1])
+        data = parsers.parse_data_csv(empty, expected_site="Madrid")
+        self.assertEqual(data.points, [])
 
 
 class TestAggregations(unittest.TestCase):

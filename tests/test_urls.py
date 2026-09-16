@@ -55,6 +55,18 @@ class TestBuildDataUrl(unittest.TestCase):
         )
         self.assertIn("site=Cart_Site", url)
 
+    def test_trailing_space_site_is_stripped(self):
+        # Regression: 'Valladolid ' made AERONET ignore the site filter and
+        # return every station; the URL must carry the clean name.
+        for dirty in ("Valladolid ", " Valladolid", "  Valladolid  "):
+            url = urls_mod.build_data_url(
+                dirty, dt.datetime(2026, 3, 1, tzinfo=dt.timezone.utc)
+            )
+            q = parse_qs(urlparse(url).query)
+            self.assertEqual(q["site"], ["Valladolid"], dirty)
+            self.assertNotIn("+", url)
+            self.assertNotIn("%20", url)
+
     def test_bad_level_raises(self):
         with self.assertRaises(ValueError):
             urls_mod.build_data_url(
