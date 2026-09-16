@@ -5,34 +5,26 @@ Custom component `custom_components/aeronet/` (HACS-friendly) que muestra AOD de
 para una estación elegida por el usuario vía select entity, config flow UI, DataUpdateCoordinator.
 
 ## Evidence from exploration (verified 2026-09-16)
-- Site list: https://aeronet.gsfc.nasa.gov/aeronet_locations_v3.txt — línea 1 "AERONET_Database_Site_List,...",
-  línea 2 cabecera `Site_Name,Longitude(decimal_degrees),Latitude(decimal_degrees),Elevation(meters)`, ~1675 filas.
-- Web service: /cgi-bin/print_web_data_v3. Parámetros obligatorios (doc oficial): year,month,day, AVG
-  (10=all points, 20=daily), data_type AOD10|AOD15|AOD20=1. Opcionales: year2/month2/day2, site (exact match),
-  if_no_html=1. Sin parámetros devuelve HTML de ayuda ("Error: Not enough parameters").
-- CSV datos real (Madrid, L1.5, AVG=10): 5 líneas meta, línea 6 = cabecera columnas (`AERONET_Site,
-  Date(dd:mm:yyyy),Time(hh:mm:ss),...AOD_500nm(index 18)...Site_Latitude(Degrees),Site_Longitude(Degrees),
-  Site_Elevation(m)...Last_Date_Processed,...`). -999.0 = sin dato. Fecha UTC, formato dd:mm:yyyy + hh:mm:ss.
-- Ejemplo real validado: site=Madrid&year=2026&month=9&day=10&year2=2026&month2=9&day2=16&AOD15=1&AVG=10&if_no_html=1
-
-## Scope
-Wavelength primario: AOD_500nm, fallback AOD_551nm (documentado en README).
-Ventana de datos: últimos 7 días (incluye hoy UTC).
+- Site list: aeronet_locations_v3.txt — banner + cabecera + ~1675 filas (Site_Name,Lon,Lat,Elev).
+- Web service print_web_data_v3: obligatorios year,month,day,AVG(10|20),AODxx=1; opcionales
+  year2/month2/day2, site exact, if_no_html=1. Sin parámetros → HTML de ayuda (detected as error).
+- CSV datos: 5+ líneas meta, cabecera "AERONET_Site,Date(dd:mm:yyyy),Time(hh:mm:ss)...", -999=no data, UTC.
 
 ## Tasks
-- [ ] T1 Estructura repo + manifest + const + parsers (site list, data CSV, help-error) — stdlib puro
-- [ ] T2 client/coordinators (aiohttp, UA, timeouts, reintentos; sites semanal, datos configurable)
-- [ ] T3 config flow UI (email opcional, level 1.0/1.5/2.0, frecuencia; validación site name)
-- [ ] T4 select entity estación + sensors (AOD actual, lat/lon/elev, último dato, media 24h, serie días en attrs)
-- [ ] T5 strings/translations en+es
-- [ ] T6 tests unittest con fixtures reales extraídos de la exploración
-- [ ] T7 README + commit git
+- [x] T1 Estructura repo + manifest + const + parsers stdlib (parsers.py, urls.py)
+- [x] T2 client/coordinators aiohttp (UA, timeouts, 2 reintentos; sites semanal, datos configurable)
+- [x] T3 config flow UI + options flow (email, level, frecuencia; site selector si lista cacheada)
+- [x] T4 select estación (persistido en entry data) + 6 sensors (AOD 500nm, 24h media, lat/lon/elev,
+      last data, attrs daily_mean_aod + recent_points_24h)
+- [x] T5 strings.json + translations en/es
+- [x] T6 23 unittest sobre fixtures reales (site list, Madrid CSV, help HTML) — OK en python3 stdlib
+- [x] T7 README + .hacs.json + commit git (09a1275)
 
-## Constraints
-- No bloquear event loop (aiohttp, no requests). Sin dependencias extra más allá de aiohttp.
-- Attributes ≤ ~16KB (límite event bus HA): serie = medias diarias (7 pts) + puntos horarios 24h (~24 pts).
-- Tests solo con stdlib (unittest), sin importar homeassistant.
+## Verification
+- `python3 -m unittest discover -s tests`: 23 OK.
+- `python3 scripts/live_check.py` contra NASA real (Madrid, L1.5): 914 puntos, latest
+  2026-09-16T17:08Z AOD_500nm 0.1214, serie 7 días correcta. LIVE OK.
 
-## Checks
-- `python3 -m unittest discover tests` verde.
-- `python3 -m py_compile` de todos los módulos con imports HA (sintaxis).
+## Known limits (documented in README)
+- Select con ~1675 opciones vs sugerencia core ≤600.
+- Dropdown del config flow como texto hasta que cargue la lista en el primer arranque.
