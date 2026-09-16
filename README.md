@@ -1,57 +1,56 @@
-# NASA AERONET para Home Assistant
+# NASA AERONET for Home Assistant
 
-Integración custom que muestra la Profundidad Óptica de Aerosoles (AOD) de la
-red [AERONET](https://aeronet.gsfc.nasa.gov/) de la NASA para la estación que
-eligas de un dropdown con las ~1675 estaciones mundiales.
+Custom integration that surfaces Aerosol Optical Depth (AOD) from NASA's
+[AERONET](https://aeronet.gsfc.nasa.gov/) network for a station you pick from a
+dropdown of ~1,675 stations worldwide.
 
-## Qué crea
+## What it creates
 
-Al añadir la integración se crea un dispositivo "AERONET · <estación>" con:
+Adding the integration creates an "AERONET · <station>" device with:
 
-| Entidad | Descripción |
+| Entity | Description |
 |---|---|
-| `sensor.aeronet_aod` | AOD del último punto válido. Longitud de onda: **500 nm** (columna `AOD_500nm`); si la estación no la publica, fallback automático a 551/555/560 nm (se indica en el atributo `wavelength`). |
-| `sensor.aeronet_aod_24h_mean` | Media de los puntos de las últimas 24 h |
-| `sensor.aeronet_last_data` | Timestamp (UTC) del último dato |
-| `sensor.aeronet_latitude/longitude/elevation` | Ubicación de la estación |
-| `select.aeronet_station` | Dropdown para cambiar de estación en caliente |
+| `sensor.aeronet_aod` | AOD of the latest valid point. Wavelength: **500 nm** (`AOD_500nm` column); if the station does not publish it, automatic fallback to 551/555/560 nm (reported in the `wavelength` attribute). |
+| `sensor.aeronet_aod_24h_mean` | Mean of the points from the last 24 h |
+| `sensor.aeronet_last_data` | Timestamp (UTC) of the latest data point |
+| `sensor.aeronet_latitude/longitude/elevation` | Station location |
+| `select.aeronet_station` | Dropdown to switch stations at runtime |
 
-El sensor principal lleva attributes pensados para graficar con history:
-- `daily_mean_aod`: media por día de los últimos 7 días.
-- `recent_points_24h`: puntos horarios `[iso_time, aod]` de las últimas 24 h.
+The main sensor carries attributes designed for history graphing:
+- `daily_mean_aod`: daily mean over the last 7 days.
+- `recent_points_24h`: hourly `[iso_time, aod]` points from the last 24 h.
 
-## Instalación
+## Installation
 
 ### Manual
-1. Copia `custom_components/aeronet/` a `<config>/custom_components/aeronet/`.
-2. Reinicia Home Assistant.
-3. Configuración → Dispositivos y servicios → Añadir integración → "NASA AERONET".
+1. Copy `custom_components/aeronet/` into `<config>/custom_components/aeronet/`.
+2. Restart Home Assistant.
+3. Settings → Devices & services → Add integration → "NASA AERONET".
 
 ### HACS
-Añade este repo como *custom repository* (tipo "Integration") y espérala en el
-buscador de HACS. (Una vez publicado, se puede declarar `homeassistant`
-category en `.hacs.json`.)
+Add this repository as a *custom repository* (type "Integration") and it will
+appear in the HACS explorer.
 
 ### Config flow
-- **Estación inicial**: dropdown si la lista ya está cacheada; si no, campo de
-  texto con el nombre exacto (lista en
-  https://aeronet.gsfc.nasa.gov/aeronet_locations_v3.txt). Luego se cambia con
-  la entidad select.
-- **Email (opcional)**: AERONET recomienda registrar un email para el web
-  service de uso intensivo.
-- **Nivel de datos**: 1.0 (calibrado provisional), 1.5 (recomendado) o 2.0
-  (validado con AERONET-Net).
-- **Frecuencia**: 10–1440 min (por defecto 60).
+- **Initial station**: dropdown once the station list is cached; otherwise a
+  text field taking the exact name (list at
+  https://aeronet.gsfc.nasa.gov/aeronet_locations_v3.txt). Change it later via
+  the select entity.
+- **Email (optional)**: AERONET recommends registering an email for heavy web
+  service usage.
+- **Data level**: 1.0 (provisional calibration), 1.5 (recommended) or 2.0
+  (AERONET-net validated).
+- **Update interval**: 10–1440 min (default 60).
 
-## Detalles técnicos
+## Technical details
 
-- `DataUpdateCoordinator` por estación + un coordinador global de la lista de
-  estaciones con caché en memoria y refresco semanal.
-- Ventana de datos: últimos 7 días, formato "all points" (`AVG=10`), `if_no_html=1`.
-- Cliente aiohttp con User-Agent identificable (`home-assistant-aeronet/1.0`),
-  timeout de conexión 15 s / total 60 s, 2 reintentos con backoff.
-- Si AERONET devuelve su página HTML de ayuda (parámetros inválidos), se
-  traduce a un error claro en el coordinador en vez de parsear basura.
+- A `DataUpdateCoordinator` per station plus one global station-list
+  coordinator with in-memory cache and weekly refresh.
+- Data window: last 7 days, "all points" format (`AVG=10`), `if_no_html=1`.
+- aiohttp client with an identifiable User-Agent (`home-assistant-aeronet/1.0`),
+  15 s connect / 60 s total timeout, 2 retries with backoff.
+- When AERONET returns its HTML help page (invalid parameters), it is
+  translated into a clear coordinator error instead of parsing garbage.
 
 ## Tests
 
@@ -59,23 +58,21 @@ category en `.hacs.json`.)
 python3 -m unittest discover -s tests
 ```
 
-23 tests sobre fixtures reales (CSV de estaciones, CSV de datos de Madrid,
-página HTML de ayuda del web service). Solo stdlib, sin instalar nada.
+23 tests over real fixtures (station-list CSV, Madrid data CSV, web service
+HTML help page). Stdlib only, nothing to install.
 
-## Límites conocidos
+## Known limitations
 
-- **El select con ~1675 opciones**: HA core sugiere ≤600 opciones por entidad
-  select. La UI lo permite pero puede ir lento; si tu build lo limita, el
-  sensor igualmente funciona con la estación guardada en el config entry.
-- La lista de estaciones se cachea en memoria; tras reiniciar HA se sirve del
-  disco/último fetch al refrescar (primer arranque: el dropdown del config
-  flow puede aparecer como campo de texto hasta que cargue la lista).
-- AERONET pide no abusar del web service: intervalos <30 min con muchas
-  instancias pueden disparar el límite (HTTP 429 → el coordinador reintenta).
-- Datos en UTC (AERONET reporta UTC); el sensor de timestamp lo muestra así.
-- Algunas estaciones no tienen datos de los últimos 7 días → sensores
-  `unavailable` hasta el siguiente polling con datos.
-- Estaciones con nombres duplicados en la lista se muestran una sola vez en el
-  dropdown.
-- La integración no pide permiso de escritura en el repo NASA; los datos son
-  públicos (NASA open data).
+- **Select with ~1,675 options**: HA core suggests ≤600 options per select
+  entity. The UI allows it but may be slow; if a future build enforces a
+  limit, the sensors still work with the station stored in the config entry.
+- The station list is cached in memory; after an HA restart it is served from
+  the last fetch on refresh (first boot: the config-flow dropdown may appear
+  as a text field until the list loads).
+- AERONET asks users not to hammer the web service: intervals <30 min with
+  many instances can trip rate limits (HTTP 429 → the coordinator retries).
+- Data is in UTC (AERONET reports UTC); the timestamp sensor shows it as such.
+- Some stations have no data for the last 7 days → sensors stay `unavailable`
+  until the next poll returns data.
+- Stations with duplicate names in the list appear once in the dropdown.
+- All data is public (NASA open data); the integration never writes to NASA.
