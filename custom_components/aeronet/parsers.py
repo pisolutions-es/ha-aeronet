@@ -61,12 +61,47 @@ class SiteMeta:
     longitude: float
     elevation: float
     last_date_processed: dt.datetime | None = None
+    # Per-payload extra attribute series (e.g. SDA fine_mode_fraction keyed by
+    # ISO time). Not a sensor value; consumed by entity attributes.
+    extras: dict = field(default_factory=dict)
 
 
 @dataclass
 class AeronetData:
     meta: SiteMeta
     points: list[AodPoint] = field(default_factory=list)
+    # Extra product series keyed by slot name: "aod_daily", "sda_fine",
+    # "sda_coarse", "ssa", "vol". Each is a chronological list of points whose
+    # ``wavelength`` field records the CSV column the value came from.
+    values: dict[str, list[AodPoint]] = field(default_factory=dict)
+
+
+# Column candidate sets per product slot (first match in the header wins).
+# Names verified against live Valladolid payloads 2026-09-16: the SDA payload
+# uses bracketed names (Fine_Mode_AOD_500nm[tau_f]); SSA comes from the
+# inversion service (Single_Scattering_Albedo[<nm>], typically 440/675/870/1020);
+# VOL total volume concentration is VolC-T [µm³/cm³].
+AOD_DAILY_SLOT = "aod_daily"
+SDA_FINE_SLOT = "sda_fine"
+SDA_COARSE_SLOT = "sda_coarse"
+SSA_SLOT = "ssa"
+VOL_SLOT = "vol"
+
+AOD_COLUMNS = AOD_WAVELENGTHS
+SDA_FINE_COLUMNS = ("Fine_Mode_AOD_500nm[tau_f]", "Fine_Mode_AOD_500nm")
+SDA_COARSE_COLUMNS = ("Coarse_Mode_AOD_500nm[tau_c]", "Coarse_Mode_AOD_500nm")
+SSA_COLUMNS = (
+    "Single_Scattering_Albedo[500nm]",
+    "Single_Scattering_Albedo[550nm]",
+    "Single_Scattering_Albedo[440nm]",
+    "Single_Scattering_Albedo[675nm]",
+    "Single_Scattering_Albedo[870nm]",
+    "Single_Scattering_Albedo[1020nm]",
+)
+VOL_COLUMNS = ("VolC-T", "VolC")
+
+# SDA payload also carries the fine-mode fraction per row (attribute data).
+SDA_FRACTION_COLUMNS = ("FineModeFraction_500nm[eta]", "FineModeFraction_500nm")
 
 
 def is_help_html(body: str) -> bool:
@@ -150,16 +185,40 @@ def _header_index(header_row: list[str]) -> dict[str, int]:
 
 def _find_data_header(lines: list[str]) -> int | None:
     for i, line in enumerate(lines[:30]):
-        if line.startswith("AERONET_Site,Date("):
+        # Direct-sun AOD/TOT payloads start 'AERONET_Site,Date(dd:mm:yyyy)';
+        # SDA and inversion payloads start 'AERONET_Site,Date_(dd:mm:yyyy)'
+        # (note the underscore) — accept both prefixes.
+        if line.startswith("AERONET_Site,Date"):
             return i
     return None
 
 
-def parse_data_csv(body: str, expected_site: str | None = None) -> AeronetData:
-    """Parse a Level 1.x/2.0 all-points AOD CSV response.
+_DATE_KEYS = ("Date(dd:mm:yyyy)", "Date_(dd:mm:yyyy)")
+_TIME_KEYS = ("Time(hh:mm:ss)", "Time_(hh:mm:ss)")
 
-    Format: 5+ banner lines, a header line starting 'AERONET_Site,Date(...)',
-    then one row per measurement. -999.0 means no data.
+
+def _pick(idx: dict[str, int], keys: tuple) -> int | None:
+    for k in keys:
+        if k in idx:
+            return idx[k]
+    return None
+
+
+def parse_data_csv(
+    body: str,
+    expected_site: str | None = None,
+    *,
+    column_sets: dict[str, tuple] | None = None,
+) -> AeronetData:
+    """Parse an AERONET all-points or daily-average CSV response.
+
+    Format: 5+ banner lines, a header line starting 'AERONET_Site,Date...'
+    (SDA/inversion payloads use 'Date_'/Time_' with an underscore), then one
+    row per measurement or per day. -999.0 means no data.
+
+    ``column_sets`` maps slot name -> candidate column tuple. The slot named
+    first (or 'aod' for AOD payloads) fills ``data.points``; every slot also
+    lands in ``data.values``. Default is the AOD wavelength fallback chain.
 
     When ``expected_site`` is given, the parsed rows are checked against it:
     the web service silently ignores an unmatched ``site`` parameter and
@@ -180,10 +239,28 @@ def parse_data_csv(body: str, expected_site: str | None = None) -> AeronetData:
     header = next(reader)
     idx = _header_index(header)
 
-    # Which AOD column this site provides (500 nm preferred).
-    aod_col = next((w for w in AOD_WAVELENGTHS if w in idx), None)
-    if aod_col is None:
-        raise AeronetEmptyError("no AOD wavelength column in response")
+    if column_sets is None:
+        column_sets = {"aod": AOD_COLUMNS}
+    resolved: dict[str, int] = {}
+    for slot, candidates in column_sets.items():
+        col = _pick(idx, candidates)
+        if col is not None:
+            resolved[slot] = col
+    if not resolved:
+        raise AeronetEmptyError(
+            "none of the requested columns in response: "
+            + ", ".join(sorted(c for cs in column_sets.values() for c in cs))
+        )
+    primary_slot = next(
+        (s for s in column_sets if s in resolved and s == "aod"),
+        next(s for s in column_sets if s in resolved),
+    )
+    value_slots = list(resolved)
+
+    # Fine-mode fraction is attribute data on SDA payloads, not a sensor.
+    frac_col = idx.get(SDA_FRACTION_COLUMNS[0])
+    if frac_col is None:
+        frac_col = idx.get(SDA_FRACTION_COLUMNS[1])
 
     meta = SiteMeta(
         name="",
@@ -191,29 +268,47 @@ def parse_data_csv(body: str, expected_site: str | None = None) -> AeronetData:
         longitude=NODATA,
         elevation=NODATA,
     )
-    points: list[AodPoint] = []
+    series: dict[str, list[AodPoint]] = {s: [] for s in value_slots}
+    fractions: dict[str, float] = {}
     sites_seen: set[str] = set()
+    date_col = _pick(idx, _DATE_KEYS)
+    time_col = _pick(idx, _TIME_KEYS)
     for row in reader:
         if len(row) < len(header) or not row[0].strip():
             continue
         site_name = row[0].strip()
         sites_seen.add(_canonical_site(site_name))
+        if date_col is None or time_col is None:
+            continue
         try:
-            d = dt.datetime.strptime(row[idx["Date(dd:mm:yyyy)"]], "%d:%m:%Y")
-            t = dt.datetime.strptime(row[idx["Time(hh:mm:ss)"]], "%H:%M:%S")
+            d = dt.datetime.strptime(row[date_col], "%d:%m:%Y")
+            t = dt.datetime.strptime(row[time_col], "%H:%M:%S")
             when = dt.datetime.combine(
                 d.date(), t.time(), tzinfo=dt.timezone.utc
             )
-        except (KeyError, ValueError):
-            continue
-        try:
-            aod = float(row[idx[aod_col]])
         except ValueError:
             continue
-        if aod < 0:
-            continue  # -999 no-data (and noisy negatives)
-        points.append(AodPoint(time=when, aod=aod, wavelength=aod_col))
-        if meta.name == "":
+        row_ok = False
+        for slot in value_slots:
+            col = resolved[slot]
+            try:
+                val = float(row[col])
+            except (ValueError, IndexError):
+                continue
+            if val < 0:
+                continue  # -999 no-data (and noisy negatives)
+            series[slot].append(
+                AodPoint(time=when, aod=val, wavelength=header[col])
+            )
+            row_ok = True
+            if frac_col is not None and slot == SDA_FINE_SLOT:
+                try:
+                    frac = float(row[frac_col])
+                except (ValueError, IndexError):
+                    frac = NODATA
+                if frac >= 0:
+                    fractions[when.isoformat()] = round(frac, 4)
+        if row_ok and meta.name == "":
             meta.name = site_name
             try:
                 meta.latitude = float(row[idx["Site_Latitude(Degrees)"]])
@@ -231,10 +326,15 @@ def parse_data_csv(body: str, expected_site: str | None = None) -> AeronetData:
                 except ValueError:
                     meta.last_date_processed = None
 
-    if not points and meta.name == "":
-        # Header present but zero rows: valid response, no data in window.
+    if series.get(primary_slot) is None:
+        series[primary_slot] = []
+    if not any(series.values()) and meta.name == "":
+        # Header present but zero usable rows: valid response, no data in window.
         meta.name = "unknown"
-    points.sort(key=lambda p: p.time)
+    for lst in series.values():
+        lst.sort(key=lambda p: p.time)
+    if fractions:
+        meta.extras["fine_mode_fraction"] = fractions
 
     expected = normalize_site(expected_site or "")
     if expected and sites_seen:
@@ -260,7 +360,8 @@ def parse_data_csv(body: str, expected_site: str | None = None) -> AeronetData:
                 f"the requested '{expected}' — the site parameter was not "
                 "matched by the web service"
             )
-    return AeronetData(meta=meta, points=points)
+    points = series[primary_slot]
+    return AeronetData(meta=meta, points=points, values=series)
 
 
 def latest_point(data: AeronetData) -> AodPoint | None:
@@ -296,3 +397,52 @@ def recent_points(data: AeronetData, hours: int = 24) -> list[list[str | float]]
     return [
         [p.time.isoformat(), p.aod] for p in data.points if p.time >= cutoff
     ]
+
+
+def latest_value(
+    data: AeronetData, slot: str, hours: int | None = None
+) -> AodPoint | None:
+    """Latest point of a product series (optionally within the last `hours`)."""
+    pts = data.values.get(slot) or []
+    if hours is not None:
+        if not pts:
+            return None
+        cutoff = pts[-1].time - dt.timedelta(hours=hours)
+        pts = [p for p in pts if p.time >= cutoff]
+    return pts[-1] if pts else None
+
+
+def value_series(
+    data: AeronetData, slot: str, points: list[AodPoint] | None = None
+) -> list[list[str | float]]:
+    """[iso_time, value] pairs of a product series for graphing attributes."""
+    pts = points if points is not None else (data.values.get(slot) or [])
+    return [[p.time.isoformat(), p.aod] for p in pts]
+
+
+def today_series(
+    data: AeronetData, now: dt.datetime | None = None
+) -> list[list[str | float]]:
+    """Full current UTC day [iso_time, aod] series (00:00 -> latest point).
+
+    Sourced from the all-points fetch, so it covers today's measurements
+    since midnight regardless of how long the poll window is.
+    """
+    if not data.points:
+        return []
+    ref = max(p.time for p in data.points)
+    midnight = ref.replace(hour=0, minute=0, second=0, microsecond=0)
+    return [
+        [p.time.isoformat(), p.aod] for p in data.points if p.time >= midnight
+    ]
+
+
+def last_days_series(
+    data: AeronetData, slot: str, days: int = 7
+) -> dict[str, float]:
+    """Latest value per calendar day (UTC) for the last `days`, keyed by ISO day."""
+    pts = data.values.get(slot) or []
+    buckets: dict[str, AodPoint] = {}
+    for p in pts:  # chronological: last valid point of each day wins
+        buckets[p.time.date().isoformat()] = p
+    return {d: round(b.aod, 4) for d, b in sorted(buckets.items())[-days:]}

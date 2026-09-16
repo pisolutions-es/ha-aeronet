@@ -8,7 +8,8 @@
           "site": "Estación inicial",
           "email": "Email (opcional, AERONET lo recomienda para el web service)",
           "level": "Nivel de datos",
-          "interval_min": "Frecuencia de actualización (minutos)"
+          "interval_min": "Frecuencia de actualización (minutos)",
+          "products": "Productos"
         }
       },
       "init": {
@@ -16,7 +17,8 @@
         "data": {
           "email": "Email (opcional)",
           "level": "Nivel de datos",
-          "interval_min": "Frecuencia de actualización (minutos)"
+          "interval_min": "Frecuencia de actualización (minutos)",
+          "products": "Productos"
         }
       }
     },
@@ -31,6 +33,21 @@
       },
       "aod_24h": {
         "name": "AOD media 24h"
+      },
+      "aod_daily": {
+        "name": "AOD media diaria"
+      },
+      "sda_fine": {
+        "name": "SDA profundidad óptica de aerosol modo fino"
+      },
+      "sda_coarse": {
+        "name": "SDA profundidad óptica de aerosol modo grueso"
+      },
+      "ssa": {
+        "name": "Albedo de dispersión simple"
+      },
+      "vol": {
+        "name": "Concentración volumétrica total"
       },
       "last_data": {
         "name": "Último dato"

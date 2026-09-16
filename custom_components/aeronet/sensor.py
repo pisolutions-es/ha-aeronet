@@ -18,9 +18,29 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import (
+    CONF_PRODUCTS,
+    DOMAIN,
+    PRODUCT_AOD,
+    PRODUCT_SDA,
+    PRODUCT_SSA,
+    PRODUCT_VOL,
+)
 from .coordinators import AeronetDataCoordinator
-from .parsers import daily_series, latest_point, mean_last_24h, recent_points
+from .parsers import (
+    SDA_COARSE_SLOT,
+    SDA_FINE_SLOT,
+    SSA_SLOT,
+    VOL_SLOT,
+    daily_series,
+    latest_point,
+    latest_value,
+    last_days_series,
+    mean_last_24h,
+    recent_points,
+    today_series,
+    value_series,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +86,44 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
     ),
 )
 
+# Sensors created only when the matching product is enabled in config.
+PRODUCT_SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
+    PRODUCT_AOD: (
+        SensorEntityDescription(
+            key="aod_daily",
+            translation_key="aod_daily",
+            state_class=SensorStateClass.MEASUREMENT,
+        ),
+    ),
+    PRODUCT_SDA: (
+        SensorEntityDescription(
+            key="sda_fine",
+            translation_key="sda_fine",
+            state_class=SensorStateClass.MEASUREMENT,
+        ),
+        SensorEntityDescription(
+            key="sda_coarse",
+            translation_key="sda_coarse",
+            state_class=SensorStateClass.MEASUREMENT,
+        ),
+    ),
+    PRODUCT_SSA: (
+        SensorEntityDescription(
+            key="ssa",
+            translation_key="ssa",
+            state_class=SensorStateClass.MEASUREMENT,
+        ),
+    ),
+    PRODUCT_VOL: (
+        SensorEntityDescription(
+            key="vol",
+            translation_key="vol",
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement="µm³/cm³",
+        ),
+    ),
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -73,9 +131,17 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coord: AeronetDataCoordinator = hass.data[DOMAIN][entry.entry_id]["data"]
-    async_add_entities(
+    entities = [
         AeronetSensor(coord, entry, description) for description in SENSORS
+    ]
+    products = (
+        {**entry.data, **entry.options}.get(CONF_PRODUCTS)
+        or [PRODUCT_AOD]
     )
+    for product in products:
+        for description in PRODUCT_SENSORS.get(product, ()):
+            entities.append(AeronetSensor(coord, entry, description))
+    async_add_entities(entities)
 
 
 class AeronetSensor(CoordinatorEntity, SensorEntity):
@@ -114,6 +180,21 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             return round(p.aod, 4) if p else None
         if key == "aod_24h":
             return mean_last_24h(data)
+        if key == "aod_daily":
+            p = latest_value(data, "aod_daily", hours=26)
+            return round(p.aod, 4) if p else None
+        if key == "sda_fine":
+            p = latest_value(data, SDA_FINE_SLOT, hours=24)
+            return round(p.aod, 4) if p else None
+        if key == "sda_coarse":
+            p = latest_value(data, SDA_COARSE_SLOT, hours=24)
+            return round(p.aod, 4) if p else None
+        if key == "ssa":
+            p = latest_value(data, SSA_SLOT, hours=26)
+            return round(p.aod, 4) if p else None
+        if key == "vol":
+            p = latest_value(data, VOL_SLOT, hours=26)
+            return round(p.aod, 6) if p else None
         if key == "last_data":
             if not data.points:
                 return None
@@ -129,13 +210,45 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         data = self._coord.data
-        if data is None or self.entity_description.key != "aod":
+        if data is None:
             return None
-        p = latest_point(data)
-        return {
-            "site": data.meta.name or self._coord.site,
-            "wavelength": p.wavelength if p else None,
-            "point_count": len(data.points),
-            "daily_mean_aod": daily_series(data),
-            "recent_points_24h": recent_points(data, hours=24),
-        }
+        key = self.entity_description.key
+        if key == "aod":
+            p = latest_point(data)
+            return {
+                "site": data.meta.name or self._coord.site,
+                "wavelength": p.wavelength if p else None,
+                "point_count": len(data.points),
+                "daily_mean_aod": daily_series(data),
+                "recent_points_24h": recent_points(data, hours=24),
+                "today_series": today_series(data),
+            }
+        if key == "aod_daily":
+            return {"daily_series_7d": last_days_series(data, "aod_daily")}
+        if key in ("sda_fine", "sda_coarse"):
+            slot = SDA_FINE_SLOT if key == "sda_fine" else SDA_COARSE_SLOT
+            attrs = {
+                f"{key}_series_24h": value_series(data, slot),
+            }
+            fractions = data.meta.extras.get("fine_mode_fraction")
+            p = latest_value(data, SDA_FINE_SLOT, hours=24)
+            if fractions and p is not None:
+                attrs["fine_mode_fraction"] = fractions.get(p.time.isoformat())
+            return attrs
+        if key == "ssa":
+            p = latest_value(data, SSA_SLOT, hours=26)
+            return {"wavelength": p.wavelength if p else None}
+        if key == "vol":
+            p = latest_value(data, VOL_SLOT, hours=26)
+            attrs: dict[str, Any] = {}
+            if p is not None:
+                attrs["column"] = p.wavelength
+                day_points = [
+                    q for q in (data.values.get(VOL_SLOT) or [])
+                    if q.time.date() == p.time.date()
+                ]
+                if day_points:
+                    mean = sum(q.aod for q in day_points) / len(day_points)
+                    attrs["daily_mean"] = round(mean, 6)
+            return attrs
+        return None

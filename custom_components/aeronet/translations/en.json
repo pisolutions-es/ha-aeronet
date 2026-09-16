@@ -8,7 +8,8 @@
           "site": "Initial station",
           "email": "Email (optional, recommended by AERONET for the web service)",
           "level": "Data level",
-          "interval_min": "Update interval (minutes)"
+          "interval_min": "Update interval (minutes)",
+          "products": "Products"
         }
       },
       "init": {
@@ -16,7 +17,8 @@
         "data": {
           "email": "Email (optional)",
           "level": "Data level",
-          "interval_min": "Update interval (minutes)"
+          "interval_min": "Update interval (minutes)",
+          "products": "Products"
         }
       }
     },
@@ -31,6 +33,21 @@
       },
       "aod_24h": {
         "name": "AOD 24h mean"
+      },
+      "aod_daily": {
+        "name": "AOD daily mean"
+      },
+      "sda_fine": {
+        "name": "SDA aerosol optical depth fine mode"
+      },
+      "sda_coarse": {
+        "name": "SDA aerosol optical depth coarse mode"
+      },
+      "ssa": {
+        "name": "Single scattering albedo"
+      },
+      "vol": {
+        "name": "Volume concentration total"
       },
       "last_data": {
         "name": "Last data"

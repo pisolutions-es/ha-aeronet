@@ -5,6 +5,9 @@ DOMAIN = "aeronet"
 
 SITE_LIST_URL = "https://aeronet.gsfc.nasa.gov/aeronet_locations_v3.txt"
 WEB_SERVICE_URL = "https://aeronet.gsfc.nasa.gov/cgi-bin/print_web_data_v3"
+INVERSION_WEB_SERVICE_URL = (
+    "https://aeronet.gsfc.nasa.gov/cgi-bin/print_web_data_inv_v3"
+)
 
 USER_AGENT = (
     "home-assistant-aeronet/1.0 "
@@ -15,8 +18,28 @@ CONF_EMAIL = "email"
 CONF_LEVEL = "level"
 CONF_INTERVAL_MIN = "interval_min"
 CONF_SITE = "site"
+CONF_PRODUCTS = "products"
 
 LEVELS = {"1.0": "AOD10", "1.5": "AOD15", "2.0": "AOD20"}
+
+# Inversion web-service retrieval type per data level. AERONET publishes V3
+# inversions only at Level 1.5 (ALM15) and 2.0 (ALM20); Level 1.0 requests use
+# ALM15 (there is no Level 1.0 inversion product).
+INVERSION_LEVELS = {"1.0": "ALM15", "1.5": "ALM15", "2.0": "ALM20"}
+
+# Selectable AERONET products (config flow multiselect, default ["AOD"]).
+# Direct-sun data types per level (verified against the web service help page;
+# note products CANNOT be combined in one direct-sun request — each family
+# needs its own GET): https://aeronet.gsfc.nasa.gov/print_web_data_help_v3_new.html
+# SSA/VOL are inversion products requested from print_web_data_inv_v3 with
+# product=SSA|VOL: https://aeronet.gsfc.nasa.gov/print_web_data_help_v3_inv_new.html
+PRODUCT_AOD = "AOD"
+PRODUCT_SDA = "SDA"
+PRODUCT_SSA = "SSA"
+PRODUCT_VOL = "VOL"
+PRODUCTS = (PRODUCT_AOD, PRODUCT_SDA, PRODUCT_SSA, PRODUCT_VOL)
+PRODUCTS_INVERSION = (PRODUCT_SSA, PRODUCT_VOL)
+DEFAULT_PRODUCTS = [PRODUCT_AOD]
 
 DEFAULT_LEVEL = "1.5"
 DEFAULT_INTERVAL_MIN = 60

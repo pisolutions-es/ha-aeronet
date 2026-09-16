@@ -14,7 +14,22 @@ from .const import (
     SITE_LIST_URL,
     USER_AGENT,
 )
-from .parsers import AeronetError, AeronetData, parse_data_csv, parse_site_list
+from .parsers import (
+    AOD_COLUMNS,
+    AOD_DAILY_SLOT,
+    AeronetError,
+    AeronetData,
+    SDA_COARSE_COLUMNS,
+    SDA_COARSE_SLOT,
+    SDA_FINE_COLUMNS,
+    SDA_FINE_SLOT,
+    SSA_COLUMNS,
+    SSA_SLOT,
+    VOL_COLUMNS,
+    VOL_SLOT,
+    parse_data_csv,
+    parse_site_list,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,19 +72,56 @@ class AeronetClient:
         body = await self._get_text(SITE_LIST_URL)
         return parse_site_list(body)
 
-    def _data_url(self, site: str, now: dt.datetime) -> str:
-        from .urls import build_data_url
-
-        return build_data_url(
-            site, now, level=self._level, email=self._email
-        )
-
-    async def fetch_data(self, site: str, now: dt.datetime) -> AeronetData:
-        site = (site or "").strip()
-        url = self._data_url(site, now)
+    async def _fetch_csv(self, url: str, site: str, column_sets) -> AeronetData:
         _LOGGER.debug("AERONET fetch: %s", url)
         body = await self._get_text(url)
         # expected_site guards against the web service silently ignoring an
         # unmatched site parameter and replying with every station's rows.
-        data = parse_data_csv(body, expected_site=site)
-        return data
+        return parse_data_csv(body, expected_site=site, column_sets=column_sets)
+
+    async def fetch_data(self, site: str, now: dt.datetime) -> AeronetData:
+        """AOD all-points (AVG=10) for the window."""
+        from .urls import build_data_url
+
+        return await self._fetch_csv(
+            build_data_url(site, now, level=self._level, email=self._email),
+            site,
+            {"aod": AOD_COLUMNS},
+        )
+
+    async def fetch_daily(self, site: str, now: dt.datetime) -> AeronetData:
+        """AOD daily averages (AVG=20): one row per day incl. today's partial."""
+        from .urls import build_daily_url
+
+        return await self._fetch_csv(
+            build_daily_url(site, now, level=self._level, email=self._email),
+            site,
+            {AOD_DAILY_SLOT: AOD_COLUMNS},
+        )
+
+    async def fetch_sda(self, site: str, now: dt.datetime) -> AeronetData:
+        """SDA fine/coarse AOD all-points (separate direct-sun request)."""
+        from .urls import build_sda_url
+
+        return await self._fetch_csv(
+            build_sda_url(site, now, level=self._level, email=self._email),
+            site,
+            {SDA_FINE_SLOT: SDA_FINE_COLUMNS, SDA_COARSE_SLOT: SDA_COARSE_COLUMNS},
+        )
+
+    async def fetch_inversion(
+        self, product: str, site: str, now: dt.datetime
+    ) -> AeronetData:
+        """SSA/VOL all-points from the inversion web service."""
+        from .urls import build_inversion_url
+
+        slot = SSA_SLOT if product == "SSA" else VOL_SLOT
+        cols = SSA_COLUMNS if product == "SSA" else VOL_COLUMNS
+        return await self._fetch_csv(
+            build_inversion_url(
+                site, now, product=product, level=self._level,
+                email=self._email,
+            ),
+            site,
+            {slot: cols},
+        )
