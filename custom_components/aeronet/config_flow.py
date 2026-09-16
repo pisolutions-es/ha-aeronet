@@ -17,6 +17,7 @@ from .const import (
     CONF_LEVEL,
     CONF_PRODUCTS,
     CONF_SITE,
+    CONF_SITE_LIST_URL,
     DEFAULT_INTERVAL_MIN,
     DEFAULT_LEVEL,
     DEFAULT_PRODUCTS,
@@ -24,21 +25,25 @@ from .const import (
     DOMAIN,
     LEVELS,
     PRODUCTS,
+    SITE_LIST_URL,
+    SITE_LIST_URL_OPTIONS,
 )
 from .coordinators import get_sites_coordinator
+from .parsers import dedupe_display_names, display_to_site_name
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _site_options(hass) -> list[str] | None:
-    """Station names from the module cache, or None if not loaded yet."""
+def _site_options(hass, url: str = SITE_LIST_URL) -> list[str] | None:
+    """Deduped station display names from the cache, or None if not loaded."""
     try:
-        coord = get_sites_coordinator(hass, async_get_clientsession(hass))
+        coord = get_sites_coordinator(hass, async_get_clientsession(hass),
+                                       url=url)
         sites = coord.data
     except Exception:  # pragma: no cover - defensive
         return None
     if sites:
-        return sorted({s.name.strip() for s in sites if s.name.strip()})
+        return dedupe_display_names(sites)
     return None
 
 
@@ -69,7 +74,9 @@ class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         if user_input is not None:
-            site = (user_input.get(CONF_SITE) or DEFAULT_SITE).strip()
+            # Display labels may carry a dedupe coordinate suffix; AERONET
+            # only accepts the exact station name.
+            site = display_to_site_name(user_input.get(CONF_SITE) or DEFAULT_SITE)
             user_input = {**user_input, CONF_SITE: site}
             if not user_input.get(CONF_PRODUCTS):
                 user_input[CONF_PRODUCTS] = list(DEFAULT_PRODUCTS)
@@ -157,6 +164,15 @@ class AeronetOptionsFlow(config_entries.OptionsFlow):
                             options=list(PRODUCTS),
                             multiple=True,
                             mode=selector.SelectSelectorMode.LIST,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_SITE_LIST_URL,
+                        default=cur.get(CONF_SITE_LIST_URL, SITE_LIST_URL),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(SITE_LIST_URL_OPTIONS.keys()),
+                            mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
                 }

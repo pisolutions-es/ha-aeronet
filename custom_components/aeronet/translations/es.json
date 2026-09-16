@@ -18,7 +18,8 @@
           "email": "Email (opcional)",
           "level": "Nivel de datos",
           "interval_min": "Frecuencia de actualización (minutos)",
-          "products": "Productos"
+          "products": "Productos",
+          "site_list_url": "Fuente de lista de estaciones"
         }
       }
     },

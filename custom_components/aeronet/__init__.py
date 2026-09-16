@@ -14,10 +14,12 @@ from .const import (
     CONF_LEVEL,
     CONF_PRODUCTS,
     CONF_SITE,
+    CONF_SITE_LIST_URL,
     DEFAULT_LEVEL,
     DEFAULT_PRODUCTS,
     DEFAULT_SITE,
     DOMAIN,
+    SITE_LIST_URL,
 )
 from .coordinators import AeronetDataCoordinator, get_sites_coordinator
 
@@ -29,9 +31,17 @@ PLATFORMS = [Platform.SENSOR, Platform.SELECT]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass)
 
-    # Kick off (non-blocking) the global station list so the select/flow can use it.
-    sites_coord = get_sites_coordinator(hass, session)
-    hass.async_create_task(sites_coord.async_refresh())
+    # Hydrate the station list from disk first (so the config-flow dropdown
+    # is ready on the very first boot), then refresh only when there is no
+    # usable cached copy yet.
+    sites_url = {**entry.data, **entry.options}.get(
+        CONF_SITE_LIST_URL, SITE_LIST_URL
+    )
+    sites_coord = get_sites_coordinator(hass, session, url=sites_url)
+    if sites_coord.data is None:
+        await sites_coord.async_load_storage()
+    if sites_coord.data is None:
+        hass.async_create_task(sites_coord.async_refresh())
 
     data_coord = AeronetDataCoordinator(
         hass,
@@ -48,6 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "data": data_coord,
         "sites": sites_coord,
+        "sites_url": sites_url,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -76,6 +87,11 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     merged = {**entry.data, **entry.options}
     new_products = list(merged.get(CONF_PRODUCTS) or DEFAULT_PRODUCTS)
     if sorted(new_products) != sorted(coord.products):
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+    if merged.get(CONF_SITE_LIST_URL, SITE_LIST_URL) != \
+            store.get("sites_url", SITE_LIST_URL):
+        # Station-list source changed: rebind the sites coordinator.
         await hass.config_entries.async_reload(entry.entry_id)
         return
     coord.configure(

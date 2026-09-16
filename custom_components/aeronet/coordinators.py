@@ -7,23 +7,63 @@ from typing import Any
 
 import aiohttp
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import AeronetClient
-from .const import (
-    CONF_LEVEL,
-    DEFAULT_PRODUCTS,
-    DOMAIN,
-    PRODUCTS_INVERSION,
-    PRODUCT_AOD,
-    PRODUCT_SDA,
-    SITES_REFRESH_DAYS,
-)
-from .parsers import (
-    AeronetData,
-    AeronetError,
-    normalize_site,
-)
+try:  # package import inside Home Assistant
+    from .client import AeronetClient
+    from .const import (
+        CONF_LEVEL,
+        DATA_WINDOW_DAYS,
+        DATA_WINDOW_WIDE_DAYS,
+        DEFAULT_PRODUCTS,
+        DOMAIN,
+        PRODUCTS_INVERSION,
+        PRODUCT_AOD,
+        PRODUCT_SDA,
+        SITES_REFRESH_DAYS,
+        SITE_LIST_URL,
+    )
+    from .parsers import (
+        AeronetData,
+        AeronetError,
+        Site,
+        normalize_site,
+    )
+    from .site_cache import (
+        STORAGE_VERSION,
+        is_stale,
+        sites_from_payload,
+        sites_to_payload,
+        storage_key,
+    )
+except ImportError:  # flat import in stdlib-only unit tests
+    from client import AeronetClient  # type: ignore
+    from const import (  # type: ignore
+        CONF_LEVEL,
+        DATA_WINDOW_DAYS,
+        DATA_WINDOW_WIDE_DAYS,
+        DEFAULT_PRODUCTS,
+        DOMAIN,
+        PRODUCTS_INVERSION,
+        PRODUCT_AOD,
+        PRODUCT_SDA,
+        SITES_REFRESH_DAYS,
+        SITE_LIST_URL,
+    )
+    from parsers import (  # type: ignore
+        AeronetData,
+        AeronetError,
+        Site,
+        normalize_site,
+    )
+    from site_cache import (  # type: ignore
+        STORAGE_VERSION,
+        is_stale,
+        sites_from_payload,
+        sites_to_payload,
+        storage_key,
+    )
 
 
 def _merge(base: AeronetData | None, other: AeronetData) -> AeronetData:
@@ -39,19 +79,39 @@ def _merge(base: AeronetData | None, other: AeronetData) -> AeronetData:
         base.meta.elevation = other.meta.elevation
     return base
 
+
+def payload_is_empty(data: AeronetData | None) -> bool:
+    """True when a payload carries no usable measurement points at all."""
+    if data is None:
+        return True
+    if data.points:
+        return False
+    return not any(series for series in data.values.values())
+
+
 _LOGGER = logging.getLogger(__name__)
 
-# Module-level cache of the (slow-changing) global site list, shared by all
-# config entries and refreshed weekly.
-_sites_cache: list[Any] | None = None
-_sites_coordinator: "SiteListCoordinator | None" = None
+# Module-level cache of the (slow-changing) global site list, keyed by the
+# configured source URL so entries using different lists coexist. Freshness
+# per key is tracked from the disk payload's saved_at date.
+_sites_cache: dict[str, list[Any]] = {}
+_sites_saved_at: dict[str, str] = {}
+_sites_coordinators: dict[str, "SiteListCoordinator"] = {}
 
 
 class SiteListCoordinator(DataUpdateCoordinator):
-    """Weekly-refreshing cache of the ~2000 AERONET stations."""
+    """Cache of AERONET stations for one source URL.
 
-    def __init__(self, hass: HomeAssistant, session: aiohttp.ClientSession) -> None:
-        global _sites_cache
+    The list is persisted through the Home Assistant storage helper so the
+    config-flow dropdown can be populated from disk on the very first boot
+    (no live NASA fetch needed when the cached copy is fresh); when the
+    on-disk copy is older than SITES_REFRESH_DAYS the refresh runs in the
+    background instead of blocking the dropdown.
+    """
+
+    def __init__(self, hass: HomeAssistant, session: aiohttp.ClientSession,
+                 *, url: str = SITE_LIST_URL) -> None:
+        self._url = url
         self._client = AeronetClient(session)
         super().__init__(
             hass,
@@ -59,26 +119,58 @@ class SiteListCoordinator(DataUpdateCoordinator):
             name=f"{DOMAIN}_sites",
             update_interval=dt.timedelta(days=SITES_REFRESH_DAYS),
         )
-        self.data = _sites_cache  # serve cached list immediately on restart
+        self.data = _sites_cache.get(url)  # serve in-memory cache immediately
+
+    def _store(self) -> Store:
+        return Store(self.hass, STORAGE_VERSION, storage_key(self._url),
+                     private=True)
+
+    async def async_load_storage(self) -> None:
+        """Hydrate the cache from disk (call during setup, before refreshing)."""
+        payload = await self._store().async_load()
+        sites = sites_from_payload(payload, Site) if payload else None
+        if not sites:
+            return
+        if self._url not in _sites_cache:
+            _sites_cache[self._url] = sites
+            _sites_saved_at[self._url] = payload.get("saved_at", "")
+            self.data = sites
+        if is_stale(payload, dt.datetime.now(dt.timezone.utc)):
+            _LOGGER.info(
+                "AERONET site list cache older than %d days; refreshing in "
+                "the background", SITES_REFRESH_DAYS)
+            # Dropdown is usable immediately from the stale list; NASA fetch
+            # happens off the setup path.
+            self.hass.async_create_task(self.async_refresh())
 
     async def _async_update_data(self):
-        global _sites_cache
         try:
-            sites = await self._client.fetch_site_list()
+            sites = await self._client.fetch_site_list(self._url)
         except AeronetError as err:
-            if _sites_cache is not None:
+            cached = _sites_cache.get(self._url)
+            if cached is not None:
                 _LOGGER.warning("Site list refresh failed, keeping cache: %s", err)
-                return _sites_cache
+                return cached
             raise UpdateFailed(f"Could not load AERONET site list: {err}") from err
-        _sites_cache = sites
+        _sites_cache[self._url] = sites
+        payload = sites_to_payload(sites, dt.datetime.now(dt.timezone.utc))
+        _sites_saved_at[self._url] = payload["saved_at"]
+        try:
+            await self._store().async_save(payload)
+        except Exception:  # pragma: no cover - disk problems must not fail HA
+            _LOGGER.warning("Could not persist AERONET site list cache",
+                            exc_info=True)
         return sites
 
 
-def get_sites_coordinator(hass: HomeAssistant, session: aiohttp.ClientSession):
-    global _sites_coordinator
-    if _sites_coordinator is None or _sites_coordinator.hass is not hass:
-        _sites_coordinator = SiteListCoordinator(hass, session)
-    return _sites_coordinator
+def get_sites_coordinator(hass: HomeAssistant,
+                         session: aiohttp.ClientSession,
+                         *, url: str = SITE_LIST_URL) -> SiteListCoordinator:
+    coord = _sites_coordinators.get(url)
+    if coord is None or coord.hass is not hass:
+        coord = SiteListCoordinator(hass, session, url=url)
+        _sites_coordinators[url] = coord
+    return coord
 
 
 class AeronetDataCoordinator(DataUpdateCoordinator):
@@ -124,14 +216,10 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
         if products is not None:
             self._products = list(products)
 
-    async def _async_update_data(self):
-        now = dt.datetime.now(dt.timezone.utc)
-        client = AeronetClient(
-            self._session, email=self._email, level=self._level
-        )
-        site = self.site
-        products = self._products or DEFAULT_PRODUCTS
-        errors: list[str] = []
+    async def _fetch_all(self, client: AeronetClient, site: str,
+                        now: dt.datetime, days: int,
+                        errors: list[str]) -> AeronetData | None:
+        """One pass over the configured products at the given window width."""
 
         async def _try(label, coro):
             try:
@@ -143,16 +231,47 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
 
         # Base payload: whichever all-points fetch runs first provides meta.
         base: AeronetData | None = None
+        products = self._products or DEFAULT_PRODUCTS
         if PRODUCT_AOD in products:
-            base = await _try("AOD", client.fetch_data(site, now))
+            base = await _try("AOD", client.fetch_data(site, now, days=days))
         if base is None and PRODUCT_SDA in products:
-            base = await _try("SDA", client.fetch_sda(site, now))
+            base = await _try("SDA", client.fetch_sda(site, now, days=days))
         for product in products:
             if product not in PRODUCTS_INVERSION:
                 continue
-            inv = await _try(product, client.fetch_inversion(product, site, now))
+            inv = await _try(
+                product, client.fetch_inversion(product, site, now, days=days))
             if inv is not None:
                 base = _merge(base, inv)
+        return base
+
+    async def _async_update_data(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        client = AeronetClient(
+            self._session, email=self._email, level=self._level
+        )
+        site = self.site
+        products = self._products or DEFAULT_PRODUCTS
+        errors: list[str] = []
+
+        base = await self._fetch_all(client, site, now, DATA_WINDOW_DAYS,
+                                     errors)
+
+        # Some stations report only campaign/monthly data and answer the 7-day
+        # window with an empty payload: widen once to DATA_WINDOW_WIDE_DAYS
+        # (documented in README). Widening only applies when the requests
+        # themselves worked — a request failure retries on the next poll.
+        if (base is not None and payload_is_empty(base)
+                and not errors):
+            _LOGGER.info(
+                "AERONET 7-day window empty for '%s'; retrying widened to "
+                "%d days", site, DATA_WINDOW_WIDE_DAYS)
+            wide_errors: list[str] = []
+            widened = await self._fetch_all(client, site, now,
+                                            DATA_WINDOW_WIDE_DAYS, wide_errors)
+            if widened is not None and not payload_is_empty(widened):
+                base = widened
+                errors = wide_errors
 
         if base is None:
             if errors:
@@ -162,7 +281,14 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
         # Daily averages only make sense for AOD and are additive: on failure,
         # keep the previously fetched daily series.
         if PRODUCT_AOD in products:
-            daily = await _try("AOD daily", client.fetch_daily(site, now))
+            async def _try_daily():
+                try:
+                    return await client.fetch_daily(site, now)
+                except AeronetError as err:
+                    errors.append(f"AOD daily: {err}")
+                    _LOGGER.warning("AERONET AOD daily fetch failed: %s", err)
+                    return None
+            daily = await _try_daily()
             if daily is not None:
                 base.values.update(daily.values)
                 base.meta.extras.update(daily.meta.extras)
@@ -182,9 +308,10 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
 
         if errors:
             _LOGGER.info("AERONET partial update for '%s': %s", site, "; ".join(errors))
-        if not base.points and not any(base.values.values()):
+        if payload_is_empty(base):
             raise UpdateFailed(
-                "AERONET returned no data for site '%s' in the last 7 days" % site
+                "AERONET returned no data for site '%s' in the last %d days"
+                % (site, DATA_WINDOW_WIDE_DAYS)
             )
         return base
 

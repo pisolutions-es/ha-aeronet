@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_SITE, DOMAIN
 from .coordinators import AeronetDataCoordinator, SiteListCoordinator
+from .parsers import dedupe_display_names, display_to_site_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,17 +60,18 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         sites = self.coordinator.data or []
-        names = sorted({s.name.strip() for s in sites if s.name.strip()})
+        names = dedupe_display_names(sites)
         current = self._data_coord.site.strip()
         if current and current not in names:
             names.append(current)
         return names
 
     async def async_select_option(self, option: str) -> None:
-        # Station names must be exact (AERONET silently ignores a site value
-        # with stray whitespace and returns *all* stations), so normalize
-        # before persisting or requesting.
-        option = option.strip()
+        # Display labels may carry a dedupe coordinate suffix, and names must
+        # be exact for AERONET (stray whitespace makes the service ignore the
+        # site filter and return *all* stations), so recover the real station
+        # name before persisting or requesting.
+        option = display_to_site_name(option)
         self._attr_current_option = option
         self.async_write_ha_state()
         # Persist so the choice survives restarts, then re-poll the new site.

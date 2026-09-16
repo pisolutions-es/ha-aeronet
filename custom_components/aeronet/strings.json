@@ -18,7 +18,8 @@
           "email": "Email (optional)",
           "level": "Data level",
           "interval_min": "Update interval (minutes)",
-          "products": "Products"
+          "products": "Products",
+          "site_list_url": "Station list source"
         }
       }
     },
@@ -28,20 +29,44 @@
   },
   "entity": {
     "sensor": {
-      "aod": { "name": "AOD" },
-      "aod_24h": { "name": "AOD 24h mean" },
-      "aod_daily": { "name": "AOD daily mean" },
-      "sda_fine": { "name": "SDA aerosol optical depth fine mode" },
-      "sda_coarse": { "name": "SDA aerosol optical depth coarse mode" },
-      "ssa": { "name": "Single scattering albedo" },
-      "vol": { "name": "Volume concentration total" },
-      "last_data": { "name": "Last data" },
-      "latitude": { "name": "Latitude" },
-      "longitude": { "name": "Longitude" },
-      "elevation": { "name": "Elevation" }
+      "aod": {
+        "name": "AOD"
+      },
+      "aod_24h": {
+        "name": "AOD 24h mean"
+      },
+      "aod_daily": {
+        "name": "AOD daily mean"
+      },
+      "sda_fine": {
+        "name": "SDA aerosol optical depth fine mode"
+      },
+      "sda_coarse": {
+        "name": "SDA aerosol optical depth coarse mode"
+      },
+      "ssa": {
+        "name": "Single scattering albedo"
+      },
+      "vol": {
+        "name": "Volume concentration total"
+      },
+      "last_data": {
+        "name": "Last data"
+      },
+      "latitude": {
+        "name": "Latitude"
+      },
+      "longitude": {
+        "name": "Longitude"
+      },
+      "elevation": {
+        "name": "Elevation"
+      }
     },
     "select": {
-      "site": { "name": "Station" }
+      "site": {
+        "name": "Station"
+      }
     }
   }
 }

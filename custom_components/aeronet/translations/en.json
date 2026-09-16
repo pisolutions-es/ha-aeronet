@@ -18,7 +18,8 @@
           "email": "Email (optional)",
           "level": "Data level",
           "interval_min": "Update interval (minutes)",
-          "products": "Products"
+          "products": "Products",
+          "site_list_url": "Station list source"
         }
       }
     },
