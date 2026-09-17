@@ -28,6 +28,21 @@ def _install_stubs():
 
     helpers = types.ModuleType("homeassistant.helpers")
     upd = types.ModuleType("homeassistant.helpers.update_coordinator")
+    # Mock issue_registry
+    issue_reg = types.ModuleType("homeassistant.helpers.issue_registry")
+    
+    class IssueSeverity:
+        WARNING = "warning"
+    
+    def async_create_issue(*args, **kwargs):
+        pass
+    
+    def async_delete_issue(*args, **kwargs):
+        pass
+    
+    issue_reg.IssueSeverity = IssueSeverity
+    issue_reg.async_create_issue = async_create_issue 
+    issue_reg.async_delete_issue = async_delete_issue
 
     class DataUpdateCoordinator:
         def __init__(self, hass, logger, name=None, update_interval=None):
@@ -71,6 +86,7 @@ def _install_stubs():
     sys.modules["homeassistant.core"] = core
     sys.modules["homeassistant.helpers"] = helpers
     sys.modules["homeassistant.helpers.update_coordinator"] = upd
+    sys.modules["homeassistant.helpers.issue_registry"] = issue_reg
     sys.modules["homeassistant.helpers.storage"] = stor
 
 
@@ -423,6 +439,48 @@ def _noop_coro():
     async def _n():
         return None
     return _n()
+
+
+class RepairIssueTests(unittest.TestCase):
+    """v0.5.0 T5: AeronetDataCoordinator raises issues after consecutive failures."""
+
+    def test_success_after_failure_clears_issue(self):
+        import types
+        from unittest.mock import MagicMock
+        
+        # Import directly, not via custom_components
+        import coordinators
+        
+        # Mock hass and session
+        hass = types.SimpleNamespace()
+        session = types.SimpleNamespace()
+        
+        coord = coordinators.AeronetDataCoordinator(
+            hass, session, email="test@example.com", level="1.5", 
+            interval_min=60, site="Madrid", entry_id="test123"
+        )
+        
+        # Simulate 3 failures (threshold), then success
+        coord._consecutive_failures = 2  # almost at threshold
+        coord._note_failure(Exception("Network timeout"))
+        self.assertEqual(coord._consecutive_failures, 3)
+        
+        coord._note_success()
+        self.assertEqual(coord._consecutive_failures, 0)
+
+    def test_issue_id_from_entry_id(self):
+        import types
+        import coordinators
+        
+        hass = types.SimpleNamespace()
+        session = types.SimpleNamespace()
+        
+        coord = coordinators.AeronetDataCoordinator(
+            hass, session, email="", level="1.5", 
+            interval_min=60, site="Madrid", entry_id="entry456"
+        )
+        
+        self.assertEqual(coord._issue_id, "api_failing_entry456")
 
 
 if __name__ == "__main__":

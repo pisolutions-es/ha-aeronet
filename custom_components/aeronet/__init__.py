@@ -61,8 +61,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         email=entry.data.get(CONF_EMAIL, ""),
         level=merged.get(CONF_LEVEL, DEFAULT_LEVEL),
         interval_min=merged.get(CONF_INTERVAL_MIN, 60),
-        site=entry.data.get(CONF_SITE, DEFAULT_SITE),
-        products=(merged.get(CONF_PRODUCTS) or list(DEFAULT_PRODUCTS)),
+        site=merged.get(CONF_SITE) or "",
+        products=list(merged.get(CONF_PRODUCTS) or DEFAULT_PRODUCTS),
+        entry_id=entry.entry_id,
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "data": data_coord,

@@ -7,6 +7,7 @@ from typing import Any
 
 import aiohttp
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -234,6 +235,10 @@ def release_sites_coordinator(url: str) -> None:
 class AeronetDataCoordinator(DataUpdateCoordinator):
     """Per-config-entry coordinator pulling AOD data for the selected site."""
 
+    # Consecutive failures before a repair issue is raised: transient NASA
+    # hiccups (single timeout, one 429 storm) must not spam the UI.
+    FAILURE_ISSUE_THRESHOLD = 3
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -244,11 +249,14 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
         interval_min: int,
         site: str,
         products: list[str] | None = None,
+        entry_id: str = "",
     ) -> None:
         self._session = session
         self._email = email
         self._level = level
         self._products = list(products) if products else list(DEFAULT_PRODUCTS)
+        self._entry_id = entry_id
+        self._consecutive_failures = 0
         self.site = site.strip()
         super().__init__(
             hass,
@@ -256,6 +264,45 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
             name=f"{DOMAIN}_{site}",
             update_interval=dt.timedelta(minutes=interval_min),
         )
+
+    @property
+    def _issue_id(self) -> str:
+        return f"api_failing_{self._entry_id}"
+
+    def _note_failure(self, err: Exception) -> None:
+        """Raise a translated repair issue after N consecutive failures."""
+        if not hasattr(self, '_consecutive_failures'):
+            return  # coordinator was not fully initialized (test mocking)
+        self._consecutive_failures += 1
+        if self._consecutive_failures < self.FAILURE_ISSUE_THRESHOLD:
+            return
+        try:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                self._issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="api_failing",
+                translation_placeholders={
+                    "site": self.site,
+                    "failures": str(self._consecutive_failures),
+                    "error": str(err)[:200],
+                },
+            )
+        except Exception:  # pragma: no cover - registry must not break polls
+            _LOGGER.warning("AERONET repair issue could not be created",
+                            exc_info=True)
+
+    def _note_success(self) -> None:
+        if not hasattr(self, '_consecutive_failures') or not self._consecutive_failures:
+            return
+        self._consecutive_failures = 0
+        try:
+            ir.async_delete_issue(self.hass, DOMAIN, self._issue_id)
+        except Exception:  # pragma: no cover - defensive
+            _LOGGER.warning("AERONET repair issue could not be cleared",
+                            exc_info=True)
 
     @property
     def products(self) -> list[str]:
@@ -312,66 +359,76 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
         products = self._products or DEFAULT_PRODUCTS
         errors: list[str] = []
 
-        base = await self._fetch_all(client, site, now, DATA_WINDOW_DAYS,
-                                     errors)
+        try:
+            base = await self._fetch_all(client, site, now, DATA_WINDOW_DAYS,
+                                         errors)
 
-        # Some stations report only campaign/monthly data and answer the 7-day
-        # window with an empty payload: widen once to DATA_WINDOW_WIDE_DAYS
-        # (documented in README). Widening only applies when the requests
-        # themselves worked — a request failure retries on the next poll.
-        if (base is not None and payload_is_empty(base)
-                and not errors):
-            _LOGGER.info(
-                "AERONET 7-day window empty for '%s'; retrying widened to "
-                "%d days", site, DATA_WINDOW_WIDE_DAYS)
-            wide_errors: list[str] = []
-            widened = await self._fetch_all(client, site, now,
-                                            DATA_WINDOW_WIDE_DAYS, wide_errors)
-            if widened is not None and not payload_is_empty(widened):
-                base = widened
-                errors = wide_errors
+            # Some stations report only campaign/monthly data and answer the 7-day
+            # window with an empty payload: widen once to DATA_WINDOW_WIDE_DAYS
+            # (documented in README). Widening only applies when the requests
+            # themselves worked — a request failure retries on the next poll.
+            if (base is not None and payload_is_empty(base)
+                    and not errors):
+                _LOGGER.info(
+                    "AERONET 7-day window empty for '%s'; retrying widened to "
+                    "%d days", site, DATA_WINDOW_WIDE_DAYS)
+                wide_errors: list[str] = []
+                widened = await self._fetch_all(client, site, now,
+                                                DATA_WINDOW_WIDE_DAYS, wide_errors)
+                if widened is not None and not payload_is_empty(widened):
+                    base = widened
+                    errors = wide_errors
 
-        if base is None:
+            if base is None:
+                if errors:
+                    raise UpdateFailed("; ".join(errors))
+                raise UpdateFailed("no AERONET products configured")
+
+            # Daily averages only make sense for AOD and are additive: on failure,
+            # keep the previously fetched daily series.
+            if PRODUCT_AOD in products:
+                async def _try_daily():
+                    try:
+                        return await client.fetch_daily(site, now)
+                    except AeronetError as err:
+                        errors.append(f"AOD daily: {err}")
+                        _LOGGER.warning("AERONET AOD daily fetch failed: %s", err)
+                        return None
+                daily = await _try_daily()
+                if daily is not None:
+                    base.values.update(daily.values)
+                    base.meta.extras.update(daily.meta.extras)
+                elif (
+                    self.data is not None
+                    and getattr(self.data, "values", None)
+                    and normalize_site(self.data.meta.name) in (
+                        "", normalize_site(site)
+                    )
+                ):
+                    # Daily fetch failed: keep the previous daily series when it
+                    # still belongs to this site (set_site clears self.data).
+                    base.values.update(
+                        {k: v for k, v in self.data.values.items()
+                         if k not in base.values}
+                    )
+
             if errors:
-                raise UpdateFailed("; ".join(errors))
-            raise UpdateFailed("no AERONET products configured")
-
-        # Daily averages only make sense for AOD and are additive: on failure,
-        # keep the previously fetched daily series.
-        if PRODUCT_AOD in products:
-            async def _try_daily():
-                try:
-                    return await client.fetch_daily(site, now)
-                except AeronetError as err:
-                    errors.append(f"AOD daily: {err}")
-                    _LOGGER.warning("AERONET AOD daily fetch failed: %s", err)
-                    return None
-            daily = await _try_daily()
-            if daily is not None:
-                base.values.update(daily.values)
-                base.meta.extras.update(daily.meta.extras)
-            elif (
-                self.data is not None
-                and getattr(self.data, "values", None)
-                and normalize_site(self.data.meta.name) in (
-                    "", normalize_site(site)
+                _LOGGER.info("AERONET partial update for '%s': %s", site, "; ".join(errors))
+            if payload_is_empty(base):
+                raise UpdateFailed(
+                    "AERONET returned no data for site '%s' in the last %d days"
+                    % (site, DATA_WINDOW_WIDE_DAYS)
                 )
-            ):
-                # Daily fetch failed: keep the previous daily series when it
-                # still belongs to this site (set_site clears self.data).
-                base.values.update(
-                    {k: v for k, v in self.data.values.items()
-                     if k not in base.values}
-                )
-
-        if errors:
-            _LOGGER.info("AERONET partial update for '%s': %s", site, "; ".join(errors))
-        if payload_is_empty(base):
-            raise UpdateFailed(
-                "AERONET returned no data for site '%s' in the last %d days"
-                % (site, DATA_WINDOW_WIDE_DAYS)
-            )
-        return base
+            
+            self._note_success()
+            return base
+        
+        except UpdateFailed as err:
+            self._note_failure(err)
+            raise
+        except Exception as err:
+            self._note_failure(err)
+            raise UpdateFailed(f"Unexpected error: {err}") from err
 
     async def set_site(self, site: str) -> None:
         site = (site or "").strip()

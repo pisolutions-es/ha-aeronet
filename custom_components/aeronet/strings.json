@@ -28,6 +28,12 @@
       "already_configured": "This station is already configured."
     }
   },
+  "issues": {
+    "api_failing": {
+      "title": "AERONET API failing for site {site}",
+      "description": "The AERONET integration has failed {failures} consecutive updates for site '{site}'. Last error: {error}.\n\nThis might be a temporary issue with NASA's servers. The integration will keep retrying automatically. If the problem persists, check the NASA AERONET website status."
+    }
+  },
   "entity": {
     "sensor": {
       "aod": {
