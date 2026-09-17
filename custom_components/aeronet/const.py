@@ -33,6 +33,11 @@ CONF_LEVEL = "level"
 CONF_INTERVAL_MIN = "interval_min"
 CONF_SITE = "site"
 CONF_PRODUCTS = "products"
+# Wavelength channels to expose as sensors (options flow multi-select of the
+# ids detected in the fetched data, e.g. ["aod_340nm", "aod_500nm", ...]).
+# Absent or empty means "all channels detected in the data" — so existing
+# installs see every channel with no action (v0.4.0).
+CONF_CHANNELS = "channels"
 
 LEVELS = {"1.0": "AOD10", "1.5": "AOD15", "2.0": "AOD20"}
 
@@ -83,4 +88,8 @@ RETRY_AFTER_MAX = 300
 # ConfigFlow (new entries) and the module-level migration handler that HA
 # core invokes (custom_components/aeronet/__init__.py).
 #   v1 -> v2 (v0.2.0): added CONF_PRODUCTS (default ["AOD"]).
-ENTRY_VERSION = 2
+#   v2 -> v3 (v0.4.0): multispectral channels. No stored-data change: the
+#     channel selection lives in entry.options (CONF_CHANNELS); an absent
+#     option means "all channels detected in the data", so a plain version
+#     bump is the complete migration.
+ENTRY_VERSION = 3

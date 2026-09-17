@@ -19,6 +19,7 @@
           "level": "Data level",
           "interval_min": "Update interval (minutes)",
           "products": "Products",
+          "channels": "Wavelength channels (empty = all detected)",
           "site_list_url": "Station list source"
         }
       }

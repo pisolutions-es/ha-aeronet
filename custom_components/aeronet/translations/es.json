@@ -19,6 +19,7 @@
           "level": "Nivel de datos",
           "interval_min": "Frecuencia de actualización (minutos)",
           "products": "Productos",
+          "channels": "Canales de longitud de onda (vacío = todos los detectados)",
           "site_list_url": "Fuente de lista de estaciones"
         }
       }

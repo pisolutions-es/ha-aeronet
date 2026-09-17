@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    CONF_CHANNELS,
     CONF_EMAIL,
     CONF_INTERVAL_MIN,
     CONF_LEVEL,
@@ -60,6 +61,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "data": data_coord,
         "sites": sites_coord,
         "sites_url": sites_url,
+        # Snapshot of the channel selection in effect for this setup, so
+        # the update listener can tell a channel change from other edits.
+        "channels": list(
+            {**entry.data, **entry.options}.get(CONF_CHANNELS) or []
+        ),
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -105,6 +111,13 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data[CONF_PRODUCTS] = list(DEFAULT_PRODUCTS)
         changed = True
 
+    if entry.version < 3:
+        # v2 -> v3 (v0.4.0): multispectral channels. Nothing to add to
+        # stored data — the channel selection lives in options, and its
+        # absence means "all channels detected in the data". The version
+        # bump is the migration; it is idempotent by construction.
+        changed = True
+
     if changed:
         try:
             hass.config_entries.async_update_entry(
@@ -132,6 +145,12 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     merged = {**entry.data, **entry.options}
     new_products = list(merged.get(CONF_PRODUCTS) or DEFAULT_PRODUCTS)
     if sorted(new_products) != sorted(coord.products):
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+    if sorted(merged.get(CONF_CHANNELS) or []) != \
+            sorted(store.get("channels") or []):
+        # Channel selection changed: newly selected channels may need
+        # entities that do not exist yet, so rebuild the entity set.
         await hass.config_entries.async_reload(entry.entry_id)
         return
     if merged.get(CONF_SITE_LIST_URL, SITE_LIST_URL) != \

@@ -12,6 +12,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_CHANNELS,
     CONF_EMAIL,
     CONF_INTERVAL_MIN,
     CONF_LEVEL,
@@ -30,7 +31,7 @@ from .const import (
     SITE_LIST_URL_OPTIONS,
 )
 from .coordinators import get_sites_coordinator
-from .parsers import dedupe_display_names, display_to_site_name
+from .parsers import channel_label, dedupe_display_names, display_to_site_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -158,6 +159,19 @@ class AeronetOptionsFlow(config_entries.OptionsFlow):
                         )
                     ),
                     vol.Optional(
+                        CONF_CHANNELS,
+                        default=list(cur.get(CONF_CHANNELS)
+                                     or [o["value"] for o in
+                                         _channel_options(self.hass,
+                                                          self._entry)]),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=_channel_options(self.hass, self._entry),
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.LIST,
+                        )
+                    ),
+                    vol.Optional(
                         CONF_SITE_LIST_URL,
                         default=cur.get(CONF_SITE_LIST_URL, SITE_LIST_URL),
                     ): selector.SelectSelector(
@@ -169,3 +183,27 @@ class AeronetOptionsFlow(config_entries.OptionsFlow):
                 }
             ),
         )
+
+
+def _channel_options(hass, entry) -> list[dict]:
+    """Channel ids currently fetched for this station (dynamic, from data).
+
+    Before the first successful poll the list is empty; saving an empty
+    selection means "all channels detected in the data" (documented in
+    README), which is also the default for fresh and migrated entries.
+    """
+    try:
+        store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+        data = store["data"].data if store else None
+    except Exception:  # pragma: no cover - defensive
+        return []
+    if data is None:
+        return []
+    try:
+        from .coordinators import detected_channels
+    except ImportError:  # pragma: no cover
+        return []
+    return [
+        {"value": c, "label": channel_label(c)}
+        for c in detected_channels(data)
+    ]

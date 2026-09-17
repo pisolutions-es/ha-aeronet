@@ -125,7 +125,9 @@ class TestChannelHelpers(unittest.TestCase):
 
     def test_detect_sorted_by_wavelength(self):
         ch = parsers.detect_channels(self.data)
-        self.assertGreater(len(ch), 10)
+        # The truncated fixture carries valid data in 8 wavelengths; the rest
+        # are all -999 and must NOT be detected (dynamic, data-driven list).
+        self.assertGreaterEqual(len(ch), 8)
         nms = [parsers.channel_nm(c) for c in ch]
         self.assertEqual(nms, sorted(nms))
         self.assertEqual(ch[0], "aod_340nm")

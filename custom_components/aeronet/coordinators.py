@@ -89,6 +89,35 @@ def payload_is_empty(data: AeronetData | None) -> bool:
     return not any(series for series in data.values.values())
 
 
+def detected_channels(data: AeronetData | None) -> list[str]:
+    """Channel ids with valid data in the current payload (sorted by nm)."""
+    if data is None:
+        return []
+    try:
+        from .parsers import detect_channels
+    except ImportError:  # flat import in stdlib-only unit tests
+        from parsers import detect_channels  # type: ignore
+    return detect_channels(data)
+
+
+def active_channels(data: AeronetData | None,
+                    configured: list[str] | None) -> list[str]:
+    """Channels to expose: configured ∩ detected, minus the main-sensor
+    wavelengths (those already have their own sensor and must not be
+    duplicated as channel entities)."""
+    try:
+        from .parsers import active_channels as _filter
+    except ImportError:  # flat import in stdlib-only unit tests
+        from parsers import active_channels as _filter  # type: ignore
+    if data is None:
+        return []
+    detected = detected_channels(data)
+    chosen = _filter(detected, configured)
+    mains = {v for k, v in data.meta.extras.items()
+             if k.startswith("main_channel_")}
+    return [c for c in chosen if c not in mains]
+
+
 _LOGGER = logging.getLogger(__name__)
 
 # Module-level cache of the (slow-changing) global site list, keyed by the

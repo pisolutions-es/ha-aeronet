@@ -103,6 +103,70 @@ VOL_COLUMNS = ("VolC-T", "VolC")
 # SDA payload also carries the fine-mode fraction per row (attribute data).
 SDA_FRACTION_COLUMNS = ("FineModeFraction_500nm[eta]", "FineModeFraction_500nm")
 
+# --- Multispectral channel discovery (v0.4.0) --------------------------------
+# Every wavelength-keyed column of a product family becomes its own channel
+# series (channel id: "<family>_<nm>nm", e.g. "aod_340nm", "ssa_1020nm").
+# The regexes are anchored so placeholder/related columns (AOD_Empty,
+# Coincident_AOD440nm, *_Input_AOD, Scattering_Angle_Bin_*[440nm]) never
+# become channels. VOL is deliberately absent: its columns (VolC-T/F/C,
+# REff-T) are size-retrieval components, not wavelengths.
+import re as _ch_re  # noqa: E402  (module already imports stdlib at top)
+
+_CHANNEL_ID_RE = _ch_re.compile(r"^(aod|ssa)_(\d+)nm$")
+
+# family -> (column regex, main-slot name whose column is the "main channel")
+CHANNEL_FAMILY_COLUMNS = {
+    "aod": _ch_re.compile(r"^AOD_(\d+)nm$"),
+    "ssa": _ch_re.compile(r"^Single_Scattering_Albedo\[(\d+)nm\]$"),
+}
+CHANNEL_FAMILY_MAIN_SLOT = {"aod": "aod", "ssa": SSA_SLOT}
+
+
+def channel_id(family: str, nm: int) -> str:
+    return f"{family}_{nm}nm"
+
+
+def channel_nm(channel: str) -> int:
+    """Wavelength in nm encoded in a channel id ('aod_1640nm' -> 1640)."""
+    m = _CHANNEL_ID_RE.match(channel or "")
+    if not m:
+        raise ValueError(f"not a channel id: {channel!r}")
+    return int(m.group(2))
+
+
+def channel_label(channel: str) -> str:
+    """Human-friendly entity/attribute label ('aod_1640nm' -> 'AOD 1640nm')."""
+    m = _CHANNEL_ID_RE.match(channel or "")
+    if not m:
+        raise ValueError(f"not a channel id: {channel!r}")
+    return f"{m.group(1).upper()} {m.group(2)}nm"
+
+
+def _channel_sort_key(channel: str) -> tuple:
+    m = _CHANNEL_ID_RE.match(channel)
+    return (m.group(1), int(m.group(2)))
+
+
+def detect_channels(data: "AeronetData") -> list[str]:
+    """Channel ids present (>=1 valid point) in a payload, family then nm."""
+    return sorted(
+        (k for k in data.values if _CHANNEL_ID_RE.match(k) and data.values[k]),
+        key=_channel_sort_key,
+    )
+
+
+def active_channels(detected: list[str],
+                    configured: list[str] | None) -> list[str]:
+    """Channels to expose: configured ∩ detected, or all when unset/empty.
+
+    Order always follows detection (ascending wavelength); configured ids the
+    station never reported are silently dropped.
+    """
+    if not configured:
+        return list(detected)
+    chosen = set(configured)
+    return [c for c in detected if c in chosen]
+
 
 def is_help_html(body: str) -> bool:
     """Detect the web service HTML help/error page (invalid parameters)."""
@@ -252,6 +316,7 @@ def parse_data_csv(
     expected_site: str | None = None,
     *,
     column_sets: dict[str, tuple] | None = None,
+    channel_families: tuple = (),
 ) -> AeronetData:
     """Parse an AERONET all-points or daily-average CSV response.
 
@@ -262,6 +327,14 @@ def parse_data_csv(
     ``column_sets`` maps slot name -> candidate column tuple. The slot named
     first (or 'aod' for AOD payloads) fills ``data.points``; every slot also
     lands in ``data.values``. Default is the AOD wavelength fallback chain.
+
+    ``channel_families`` (v0.4.0) additionally keeps EVERY wavelength column
+    of each named family ("aod"/"ssa") as its own series in ``data.values``
+    under a channel id ("<family>_<nm>nm"). The preferred-column main slot
+    is untouched, and ``meta.extras["main_channel_<family>"]`` records which
+    channel id the main sensor reads (so channel entities can skip the
+    duplicate). Columns whose channel equals the main slot's column are not
+    duplicated as channel series.
 
     When ``expected_site`` is given, the parsed rows are checked against it:
     the web service silently ignores an unmatched ``site`` parameter and
@@ -298,6 +371,27 @@ def parse_data_csv(
         (s for s in column_sets if s in resolved and s == "aod"),
         next(s for s in column_sets if s in resolved),
     )
+
+    # v0.4.0: keep every wavelength column of the requested families as its
+    # own channel series alongside the preferred-column main slot.
+    main_channels: dict[str, str] = {}
+    for family in channel_families:
+        pattern = CHANNEL_FAMILY_COLUMNS.get(family)
+        if pattern is None:
+            continue
+        for col_idx, col_name in enumerate(header):
+            m = pattern.match(col_name)
+            if not m:
+                continue
+            slot = channel_id(family, int(m.group(1)))
+            if slot not in resolved:
+                resolved[slot] = col_idx
+        main_slot = CHANNEL_FAMILY_MAIN_SLOT.get(family)
+        main_col = resolved.get(main_slot) if main_slot else None
+        if main_col is not None:
+            mm = pattern.match(header[main_col])
+            if mm:
+                main_channels[family] = channel_id(family, int(mm.group(1)))
     value_slots = list(resolved)
 
     # Fine-mode fraction is attribute data on SDA payloads, not a sensor.
@@ -378,6 +472,8 @@ def parse_data_csv(
         lst.sort(key=lambda p: p.time)
     if fractions:
         meta.extras["fine_mode_fraction"] = fractions
+    for family, chan in main_channels.items():
+        meta.extras[f"main_channel_{family}"] = chan
 
     expected = normalize_site(expected_site or "")
     if expected and sites_seen:

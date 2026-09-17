@@ -130,12 +130,15 @@ class AeronetClient:
         body = await self._get_text(url)
         return parse_site_list(body)
 
-    async def _fetch_csv(self, url: str, site: str, column_sets) -> AeronetData:
+    async def _fetch_csv(self, url: str, site: str, column_sets,
+                         channel_families: tuple = ()) -> AeronetData:
         _LOGGER.debug("AERONET fetch: %s", url)
         body = await self._get_text(url)
         # expected_site guards against the web service silently ignoring an
         # unmatched site parameter and replying with every station's rows.
-        return parse_data_csv(body, expected_site=site, column_sets=column_sets)
+        return parse_data_csv(body, expected_site=site,
+                              column_sets=column_sets,
+                              channel_families=channel_families)
 
     async def fetch_data(
         self, site: str, now: dt.datetime, *, days: int = DATA_WINDOW_DAYS
@@ -151,6 +154,7 @@ class AeronetClient:
                            days=days),
             site,
             {"aod": AOD_COLUMNS},
+            channel_families=("aod",),
         )
 
     async def fetch_daily(
@@ -208,4 +212,5 @@ class AeronetClient:
             ),
             site,
             {slot: cols},
+            channel_families=("ssa",) if product == "SSA" else (),
         )
