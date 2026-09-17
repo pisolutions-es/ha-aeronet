@@ -19,6 +19,7 @@ from .const import (
     DEFAULT_PRODUCTS,
     DEFAULT_SITE,
     DOMAIN,
+    ENTRY_VERSION,
     SITE_LIST_URL,
 )
 from .coordinators import AeronetDataCoordinator, get_sites_coordinator
@@ -72,6 +73,50 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate a stored config entry to the current schema, in place.
+
+    HA core invokes THIS module-level handler (it introspects the
+    integration component, not the ConfigFlow class). Missing it caused
+    "Migration handler not found for entry ... for aeronet" and aborted
+    setup after updating from v0.1.x (schema v1).
+
+    Steps are cumulative (v1 -> v2 -> ... -> ENTRY_VERSION) and the whole
+    handler is idempotent: running it on an already-current entry is a
+    no-op, and re-running after a partial failure finishes the job.
+    """
+    if entry.version > ENTRY_VERSION:
+        _LOGGER.error(
+            "AERONET config entry '%s' has version %s, newer than this"
+            " integration supports (%s); not downgrading",
+            entry.title, entry.version, ENTRY_VERSION,
+        )
+        return False
+
+    data = {**entry.data}
+    changed = False
+    old_version = entry.version
+
+    if entry.version < 2:
+        # v1 -> v2 (v0.2.0): products list, default ["AOD"].
+        if CONF_PRODUCTS not in data:
+            data[CONF_PRODUCTS] = list(DEFAULT_PRODUCTS)
+        changed = True
+
+    if changed:
+        try:
+            hass.config_entries.async_update_entry(
+                entry, data=data, version=ENTRY_VERSION
+            )
+        except AttributeError:  # older HA without the version kwarg
+            hass.config_entries.async_update_entry(entry, data=data)
+        _LOGGER.info(
+            "Migrated AERONET config entry '%s' from version %s to %s",
+            entry.title, old_version, ENTRY_VERSION,
+        )
+    return True
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

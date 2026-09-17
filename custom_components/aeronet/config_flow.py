@@ -23,6 +23,7 @@ from .const import (
     DEFAULT_PRODUCTS,
     DEFAULT_SITE,
     DOMAIN,
+    ENTRY_VERSION,
     LEVELS,
     PRODUCTS,
     SITE_LIST_URL,
@@ -48,27 +49,17 @@ def _site_options(hass, url: str = SITE_LIST_URL) -> list[str] | None:
 
 
 class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 2
+    VERSION = ENTRY_VERSION
 
     @staticmethod
     async def async_migrate_entry(hass, config_entry) -> bool:
-        """Migrate v1 -> v2: add the products list (default ['AOD'])."""
-        if config_entry.version > 2:
-            return False
-        if config_entry.version == 1:
-            new_data = {**config_entry.data}
-            new_data.setdefault(CONF_PRODUCTS, list(DEFAULT_PRODUCTS))
-            try:
-                hass.config_entries.async_update_entry(
-                    config_entry, data=new_data, version=2
-                )
-            except AttributeError:  # older HA without version kwarg
-                hass.config_entries.async_update_entry(config_entry, data=new_data)
-            _LOGGER.info(
-                "Migrated AERONET config entry '%s' to version 2 (products=%s)",
-                config_entry.title, new_data[CONF_PRODUCTS],
-            )
-        return True
+        """Complementary handler; HA core invokes the module-level one.
+
+        Kept as a thin delegation so both entry points stay consistent
+        (single implementation in __init__.async_migrate_entry).
+        """
+        from . import async_migrate_entry as _module_migrate
+        return await _module_migrate(hass, config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

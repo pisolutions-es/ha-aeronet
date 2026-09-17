@@ -78,3 +78,9 @@ RETRY_BACKOFF = 5
 # Upper bound for a 429 Retry-After wait (seconds); larger values are clamped
 # so a poll cycle never stalls on a bogus server value.
 RETRY_AFTER_MAX = 300
+
+# Config-entry schema version. Single source of truth for both the
+# ConfigFlow (new entries) and the module-level migration handler that HA
+# core invokes (custom_components/aeronet/__init__.py).
+#   v1 -> v2 (v0.2.0): added CONF_PRODUCTS (default ["AOD"]).
+ENTRY_VERSION = 2
