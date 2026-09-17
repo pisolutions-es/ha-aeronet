@@ -6,7 +6,7 @@
         "description": "Configuración de la fuente de datos AERONET. La estación se elige después con la entidad select 'Estación'.",
         "data": {
           "site": "Estación inicial",
-          "email": "Email (opcional, AERONET lo recomienda para el web service)",
+          "email": "Email (opcional, se envía en el User-Agent como contacto para NASA)",
           "level": "Nivel de datos",
           "interval_min": "Frecuencia de actualización (minutos)",
           "products": "Productos"
@@ -15,7 +15,7 @@
       "init": {
         "title": "Opciones de AERONET",
         "data": {
-          "email": "Email (opcional)",
+          "email": "Email (opcional, solo contacto en el User-Agent)",
           "level": "Nivel de datos",
           "interval_min": "Frecuencia de actualización (minutos)",
           "products": "Productos",

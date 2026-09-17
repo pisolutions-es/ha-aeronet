@@ -6,7 +6,7 @@
         "description": "AERONET data source settings. The station is chosen later with the 'Station' select entity.",
         "data": {
           "site": "Initial station",
-          "email": "Email (optional, recommended by AERONET for the web service)",
+          "email": "Email (optional, sent in the User-Agent for NASA contact)",
           "level": "Data level",
           "interval_min": "Update interval (minutes)",
           "products": "Products"
@@ -15,7 +15,7 @@
       "init": {
         "title": "AERONET options",
         "data": {
-          "email": "Email (optional)",
+          "email": "Email (optional, User-Agent contact only)",
           "level": "Data level",
           "interval_min": "Update interval (minutes)",
           "products": "Products",
