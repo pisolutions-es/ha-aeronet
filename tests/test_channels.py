@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import types
 import unittest
 
 sys.path.insert(
@@ -232,6 +233,39 @@ class TestChannelEntitySurface(unittest.TestCase):
         self.assertLess(len(blob.encode("utf-8")), 16384)
         self.assertTrue(attrs.get("series_limited"))
         self.assertNotIn("recent_points_24h", attrs)
+
+    def test_main_aod_attrs_honour_the_budget(self):
+        """v0.5.0 F5: the MAIN aod sensor carried its series WITHOUT the
+        budget the channel sensors got — a dense station's 7-day points blow
+        past the recorder's 16 KiB cap and the state is silently dropped."""
+        import datetime as dt
+        from custom_components.aeronet import sensor as sm
+        from parsers import AeronetData, SiteMeta, AodPoint
+        data = AeronetData(meta=SiteMeta(name="Madrid", latitude=1,
+                                         longitude=2, elevation=3))
+        base = dt.datetime(2026, 9, 10, tzinfo=dt.timezone.utc)
+        # ~7 days at 1-minute cadence: ~10k points, far past 16 KiB.
+        data.points = [AodPoint(time=base + dt.timedelta(minutes=i),
+                                aod=0.1234, wavelength="AOD_500nm")
+                       for i in range(9900)]
+        data.values = {"aod": data.points}
+
+        coord = types.SimpleNamespace(
+            data=data, site="Madrid", last_update_success=True)
+        entry = types.SimpleNamespace(entry_id="E1", data={}, options={})
+        desc = next(d for d in sm.SENSORS if d.key == "aod")
+        ent = sm.AeronetSensor(coord, entry, desc)
+        attrs = ent.extra_state_attributes
+        blob = json.dumps(attrs)
+        self.assertLess(
+            len(blob.encode("utf-8")), 16384,
+            "main aod sensor attributes must stay under the recorder cap")
+        self.assertTrue(attrs.get("series_limited"))
+        self.assertNotIn("recent_points_24h", attrs)
+        self.assertNotIn("today_series", attrs)
+        # compact attrs survive: the spectrum map and per-day means are kept
+        self.assertIn("channels_latest", attrs)
+        self.assertIn("daily_mean_aod", attrs)
 
 
 class TestChannelsOptionWiring(unittest.TestCase):

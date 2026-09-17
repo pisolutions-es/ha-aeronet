@@ -168,12 +168,38 @@ def channel_series_attrs(today: list, recent: list) -> dict:
     today_series, and the loss is flagged with ``series_limited: true``.
     """
     attrs: dict[str, Any] = {"today_series": today,
-                              "recent_points_24h": recent}
-    if _attr_blob_size(attrs) > ATTRS_BYTE_BUDGET:
-        attrs.pop("recent_points_24h", None)
-        attrs["series_limited"] = True
-    if _attr_blob_size(attrs) > ATTRS_BYTE_BUDGET:
-        attrs.pop("today_series", None)
+                             "recent_points_24h": recent}
+    return apply_series_budget(attrs)
+
+
+def apply_series_budget(attrs: dict) -> dict:
+    """v0.5.0: keep a state's raw point series under the recorder budget.
+
+    Trims the *largest* raw-series attribute first (``recent_points_24h``,
+    ``today_series``, ``<product>_series_24h``) until the serialized dict
+    fits ATTRS_BYTE_BUDGET; compact aggregates (point counts, channels_latest)
+    are kept as long as possible. Any drop is flagged
+    ``series_limited: true`` so automations can tell a trimmed series from
+    a genuinely empty one. Used by channel sensors and, since v0.5.0, the
+    main aod/ssa/sda sensors: a dense station's raw points blow past 16 KiB
+    and the recorder silently drops the whole state otherwise.
+    """
+    series_keys = ("recent_points_24h", "today_series")
+
+    def _candidates():
+        # Fixed documented order: recent_points_24h first, then
+        # today_series, then any product-specific *_series_24h (largest
+        # first among those).
+        out = [k for k in series_keys if k in attrs]
+        extras = [k for k in attrs
+                  if k.endswith("_series_24h") and k not in series_keys]
+        out += sorted(extras, key=lambda k: -_attr_blob_size({k: attrs[k]}))
+        return out
+
+    for key in _candidates():
+        if _attr_blob_size(attrs) <= ATTRS_BYTE_BUDGET:
+            break
+        attrs.pop(key)
         attrs["series_limited"] = True
     return attrs
 
@@ -330,7 +356,7 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
         key = self.entity_description.key
         if key == "aod":
             p = latest_point(data)
-            return {
+            return apply_series_budget({
                 "site": data.meta.name or self._coord.site,
                 "wavelength": p.wavelength if p else None,
                 "point_count": len(data.points),
@@ -338,14 +364,14 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
                 "recent_points_24h": recent_points(data, hours=24),
                 "today_series": today_series(data),
                 "channels_latest": channels_latest(data, "aod"),
-            }
+            })
         if key == "aod_daily":
             return {"daily_series_7d": last_days_series(data, "aod_daily")}
         if key in ("sda_fine", "sda_coarse"):
             slot = SDA_FINE_SLOT if key == "sda_fine" else SDA_COARSE_SLOT
-            attrs = {
+            attrs = apply_series_budget({
                 f"{key}_series_24h": value_series(data, slot),
-            }
+            })
             fractions = data.meta.extras.get("fine_mode_fraction")
             p = latest_value(data, SDA_FINE_SLOT, hours=24)
             if fractions and p is not None:
