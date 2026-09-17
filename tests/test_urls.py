@@ -26,7 +26,9 @@ class TestBuildDataUrl(unittest.TestCase):
         self.assertEqual(q["AOD15"], ["1"])
         self.assertEqual(q["AVG"], ["10"])
         self.assertEqual(q["if_no_html"], ["1"])
-        self.assertEqual(q["email"], ["a@b.c"])
+        # v0.5.0 F9: the service REJECTS an email query param (help page
+        # "Not enough parameters"); email must never appear in the URL.
+        self.assertNotIn("email", q)
         self.assertEqual(q["year"], ["2026"])
         self.assertEqual(q["month"], ["9"])
         self.assertEqual(q["day"], ["10"])  # 7-day window ending 2026-09-16

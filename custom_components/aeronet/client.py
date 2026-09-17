@@ -103,6 +103,18 @@ class AeronetClient:
         self._session = session
         self._email = email.strip()
         self._level = level
+        self._user_agent = USER_AGENT
+        if self._email:
+            # Contact info belongs in the User-Agent: the web service
+            # rejects an `email` query param (F9) and NASA asks for an
+            # identifiable UA. Sanitize to header-safe chars (no CR/LF,
+            # no quotes) — config values are user input.
+            safe = "".join(
+                ch for ch in self._email
+                if ch.isascii() and 0x20 < ord(ch) < 0x7F and ch not in '()"'
+            )
+            if safe:
+                self._user_agent = f"{USER_AGENT}; contact: {safe}"
 
     async def _get_text(self, url: str) -> str:
         timeout = aiohttp.ClientTimeout(
@@ -114,7 +126,8 @@ class AeronetClient:
                 async with self._session.get(
                     url,
                     timeout=timeout,
-                    headers={"User-Agent": USER_AGENT, "Accept": "text/plain"},
+                    headers={"User-Agent": self._user_agent,
+                             "Accept": "text/plain"},
                 ) as resp:
                     if resp.status == 429:
                         # AERONET rate limit: honor Retry-After (bounded) so

@@ -202,5 +202,52 @@ class LogRedactionTests(unittest.TestCase):
         self.assertIn("AERONET fetch", joined)
 
 
+class EmailParamTests(unittest.TestCase):
+    """v0.5.0 F9 (live bug 2026-09-17): print_web_data_v3 REJECTS any
+    `email` query parameter with its HTML help page ('Error: Not enough
+    parameters'). Users who filled the optional Email field got every poll
+    failing. Contact info must travel in the User-Agent header instead."""
+
+    def test_no_email_param_in_any_url(self):
+        import datetime as dt
+        import urls as urls_mod
+        now = dt.datetime(2026, 9, 17, tzinfo=dt.timezone.utc)
+        for fn in (urls_mod.build_data_url, urls_mod.build_daily_url,
+                   urls_mod.build_sda_url):
+            u = fn("Madrid", now, email="j@x.com")
+            self.assertNotIn("email", u, f"{fn.__name__} leaked email param")
+        u = urls_mod.build_inversion_url("Madrid", now, product="SSA",
+                                         email="j@x.com")
+        self.assertNotIn("email", u)
+
+    def test_email_travels_in_user_agent(self):
+        requests_headers = []
+
+        class HeaderSpy(_StubSession):
+            def get(self, url, timeout=None, headers=None):
+                requests_headers.append(headers or {})
+                return super().get(url, timeout=timeout, headers=headers)
+
+        c = AeronetClient(HeaderSpy([_StubResp(body="x")]),
+                          email="j@x.com")
+        _run(c._get_text("http://x"))
+        ua = requests_headers[0]["User-Agent"]
+        self.assertIn("j@x.com", ua)
+        self.assertNotIn("  ", ua)  # well-formed, no double spaces
+
+    def test_user_agent_without_email_unchanged(self):
+        requests_headers = []
+
+        class HeaderSpy(_StubSession):
+            def get(self, url, timeout=None, headers=None):
+                requests_headers.append(headers or {})
+                return super().get(url, timeout=timeout, headers=headers)
+
+        c = AeronetClient(HeaderSpy([_StubResp(body="x")]))
+        _run(c._get_text("http://x"))
+        from const import USER_AGENT
+        self.assertEqual(requests_headers[0]["User-Agent"], USER_AGENT)
+
+
 if __name__ == "__main__":
     unittest.main()

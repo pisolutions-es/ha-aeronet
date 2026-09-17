@@ -45,8 +45,12 @@ def _params(site: str, now: dt.datetime, data_type: str, avg: int,
         "AVG": avg,
         "if_no_html": 1,
     }
-    if email:
-        params["email"] = email
+    # NOTE (v0.5.0, live-verified 2026-09-17): the web service is *allergic*
+    # to an `email` query parameter — any request carrying one is rejected
+    # with the HTML help page ("Error: Not enough parameters"). The email
+    # parameter is silently accepted by this signature for backwards
+    # compatibility and deliberately NOT added to the query; contact info
+    # travels in the User-Agent header instead (see client.py).
     return params
 
 
