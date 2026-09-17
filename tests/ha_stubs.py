@@ -172,18 +172,18 @@ def install() -> None:
             async def async_refresh(self):
                 pass
 
+        upd.DataUpdateCoordinator = DataUpdateCoordinator
+    if not hasattr(upd, "UpdateFailed"):
         class UpdateFailed(Exception):
             pass
-
+        upd.UpdateFailed = UpdateFailed
+    if not hasattr(upd, "CoordinatorEntity"):
         class CoordinatorEntity:
             def __init__(self, coordinator=None):
                 self.coordinator = coordinator
 
             def async_write_ha_state(self):
                 pass
-
-        upd.DataUpdateCoordinator = DataUpdateCoordinator
-        upd.UpdateFailed = UpdateFailed
         upd.CoordinatorEntity = CoordinatorEntity
 
     devreg = _mod("homeassistant.helpers.device_registry")

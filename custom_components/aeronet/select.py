@@ -37,6 +37,15 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "site"
 
+    # The full station list travels in the state object (core delivers it via
+    # capability_attributes so the UI dropdown can render). Keep it OUT of
+    # the recorder database: with the historical 1675-station list the
+    # attributes exceed HA's 16 KiB per-state limit and the recorder logs
+    # "State attributes ... exceed maximum size of 16384 bytes". Core's
+    # SelectEntity already marks `options` unrecorded; declaring it here
+    # explicitly pins the behavior for our entity across HA versions.
+    _unrecorded_attributes = frozenset({"options"})
+
     def __init__(
         self,
         data_coord: AeronetDataCoordinator,

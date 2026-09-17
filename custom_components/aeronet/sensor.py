@@ -66,14 +66,15 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(
         key="latitude",
         translation_key="latitude",
-        device_class=SensorDeviceClass.DISTANCE,
+        # No device class: "°" is not a valid unit for any numeric device
+        # class (HA logs "native unit ° is not a valid unit for device
+        # class distance" otherwise). Plain degree values are still shown.
         native_unit_of_measurement="°",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
         key="longitude",
         translation_key="longitude",
-        device_class=SensorDeviceClass.DISTANCE,
         native_unit_of_measurement="°",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
