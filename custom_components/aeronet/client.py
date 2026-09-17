@@ -65,6 +65,19 @@ except ImportError:  # flat import in stdlib-only unit tests
 
 _LOGGER = logging.getLogger(__name__)
 
+# The request URL carries the user's configured email as a query param;
+# debug logs get pasted into issue reports, so the parameter is stripped.
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode  # noqa: E402
+
+
+def _redacted(url: str) -> str:
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k != "email"]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
+
 
 def _retry_after_seconds(value: str | None) -> float:
     """Parse a Retry-After header (delta-seconds form) into bounded seconds.
@@ -124,7 +137,9 @@ class AeronetClient:
                     await asyncio.sleep(
                         RETRY_BACKOFF * (2 ** attempt) + random.random()
                     )
-        raise AeronetError(f"request failed after retries: {last_err}") from last_err
+        raise AeronetError(
+            f"request failed after retries: {_redacted(str(last_err))}"
+        ) from last_err
 
     async def fetch_site_list(self, url: str = SITE_LIST_URL) -> list:
         body = await self._get_text(url)
@@ -132,7 +147,7 @@ class AeronetClient:
 
     async def _fetch_csv(self, url: str, site: str, column_sets,
                          channel_families: tuple = ()) -> AeronetData:
-        _LOGGER.debug("AERONET fetch: %s", url)
+        _LOGGER.debug("AERONET fetch: %s", _redacted(url))
         body = await self._get_text(url)
         # expected_site guards against the web service silently ignoring an
         # unmatched site parameter and replying with every station's rows.

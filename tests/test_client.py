@@ -178,5 +178,29 @@ class RetryAfterParsingTests(unittest.TestCase):
             self.assertGreater(_retry_after_seconds(bad), 0.0)
 
 
+class LogRedactionTests(unittest.TestCase):
+    """v0.5.0 F4: the request URL carries the user's configured email as a
+    query param; debug logs must never leak it (HA debug logs get shared in
+    issue reports)."""
+
+    def test_debug_log_redacts_email_param(self):
+        import datetime as dt
+        with self.assertLogs(client_mod._LOGGER, level="DEBUG") as cap:
+            try:
+                _run(client_mod.AeronetClient(
+                    _StubSession([_StubResp(
+                        body="AERONET_Site,Date(dd:mm:yyyy)\n")]),
+                    email="juan@example.com",
+                ).fetch_data("Madrid", dt.datetime(
+                    2026, 9, 17, tzinfo=dt.timezone.utc)))
+            except AeronetError:
+                pass  # body is a stub with no rows; the debug log is the point
+        joined = "\n".join(cap.output)
+        self.assertNotIn("juan@example.com", joined)
+        self.assertNotIn("email=", joined)
+        # the URL itself is still logged for debugging, just sanitized
+        self.assertIn("AERONET fetch", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
