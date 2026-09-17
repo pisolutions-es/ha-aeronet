@@ -126,6 +126,10 @@ _LOGGER = logging.getLogger(__name__)
 _sites_cache: dict[str, list[Any]] = {}
 _sites_saved_at: dict[str, str] = {}
 _sites_coordinators: dict[str, "SiteListCoordinator"] = {}
+# v0.5.0: refcount of live config entries holding each shared site
+# coordinator. Without it the module dict kept coordinators (and their
+# weekly poll timers) alive forever after every entry was unloaded.
+_sites_refs: dict[str, int] = {}
 
 
 class SiteListCoordinator(DataUpdateCoordinator):
@@ -140,6 +144,7 @@ class SiteListCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, session: aiohttp.ClientSession,
                  *, url: str = SITE_LIST_URL) -> None:
+        self.url = url
         self._url = url
         self._client = AeronetClient(session)
         super().__init__(
@@ -196,10 +201,34 @@ def get_sites_coordinator(hass: HomeAssistant,
                          session: aiohttp.ClientSession,
                          *, url: str = SITE_LIST_URL) -> SiteListCoordinator:
     coord = _sites_coordinators.get(url)
-    if coord is None or coord.hass is not hass:
+    # A coordinator HA already shut down (is_shut_down) has dead timers and
+    # listeners; never hand it back.
+    if coord is None or coord.hass is not hass or getattr(
+            coord, "is_shut_down", False):
         coord = SiteListCoordinator(hass, session, url=url)
         _sites_coordinators[url] = coord
     return coord
+
+
+def hold_sites_coordinator(url: str) -> None:
+    """Register one live config entry against the shared coordinator."""
+    _sites_refs[url] = _sites_refs.get(url, 0) + 1
+
+
+def release_sites_coordinator(url: str) -> None:
+    """Drop one entry's reference; shut polling down when the last went away."""
+    refs = _sites_refs.get(url, 0) - 1
+    if refs > 0:
+        _sites_refs[url] = refs
+        return
+    _sites_refs.pop(url, None)
+    coord = _sites_coordinators.pop(url, None)
+    if coord is not None:
+        try:
+            coord.async_shutdown()
+        except Exception:  # pragma: no cover - defensive
+            _LOGGER.warning("AERONET site coordinator shutdown failed",
+                            exc_info=True)
 
 
 class AeronetDataCoordinator(DataUpdateCoordinator):

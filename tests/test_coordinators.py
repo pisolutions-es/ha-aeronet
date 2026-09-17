@@ -269,5 +269,161 @@ class WideningTests(unittest.TestCase):
         self.assertIn("30 days", str(ctx.exception))
 
 
+class SiteListLifecycleTests(unittest.TestCase):
+    """v0.5.0 F1: shared site coordinators must stop polling when the last
+    config entry using them is unloaded (module dict kept them alive, and
+    their timers kept hitting NASA forever)."""
+
+    def setUp(self):
+        coordinators._sites_cache.clear()
+        coordinators._sites_saved_at.clear()
+        coordinators._sites_coordinators.clear()
+        coordinators._sites_refs.clear()
+        Store.data.clear()
+
+    def _fake_hass(self):
+        return types.SimpleNamespace(
+            async_create_task=lambda coro: coro.close())
+
+    def test_get_increments_and_release_shuts_down(self):
+        fake = coordinators.SiteListCoordinator.__new__(
+            coordinators.SiteListCoordinator)
+        fake.hass = self._fake_hass()
+        fake.data = None
+        fake.url = URL
+        fake.shutdown_calls = []
+
+        def shutdown():
+            fake.shutdown_calls.append(True)
+            coordinators._sites_coordinators.pop(URL, None)
+            coordinators._sites_refs.pop(URL, None)
+
+        fake.async_shutdown = shutdown
+        coordinators._sites_coordinators[URL] = fake
+
+        # get_sites_coordinator is a pure lookup (the config flow calls it
+        # too); references are taken explicitly by async_setup_entry.
+        self.assertIs(coordinators.get_sites_coordinator(
+            fake.hass, None, url=URL), fake)
+        self.assertEqual(coordinators._sites_refs.get(URL, 0), 0)
+
+        coordinators.hold_sites_coordinator(URL)
+        self.assertEqual(coordinators._sites_refs[URL], 1)
+        # A second entry sharing the same URL bumps the refcount.
+        coordinators.hold_sites_coordinator(URL)
+        self.assertEqual(coordinators._sites_refs[URL], 2)
+
+        # Unloading one entry keeps it alive.
+        coordinators.release_sites_coordinator(URL)
+        self.assertEqual(fake.shutdown_calls, [])
+        # Unloading the last one shuts polling down and forgets it.
+        coordinators.release_sites_coordinator(URL)
+        self.assertEqual(fake.shutdown_calls, [True])
+        self.assertNotIn(URL, coordinators._sites_coordinators)
+
+    def test_release_unknown_url_is_noop(self):
+        coordinators.release_sites_coordinator("https://nope.test/x.txt")
+
+    def test_shutdown_coordinator_is_replaced_not_reused(self):
+        """A shut-down coordinator must never be handed back (its timer and
+        listeners are dead after HA shutdown)."""
+        dead = coordinators.SiteListCoordinator.__new__(
+            coordinators.SiteListCoordinator)
+        dead.hass = self._fake_hass()
+        dead.data = None
+        dead.is_shut_down = True
+        coordinators._sites_coordinators[URL] = dead
+        coordinators._sites_refs[URL] = 0
+
+        coord = coordinators.get_sites_coordinator(
+            dead.hass, None, url=URL)
+        self.assertIsNot(coord, dead)
+
+
+class FirstRefreshTests(unittest.TestCase):
+    """v0.5.0 F2: setup must use async_config_entry_first_refresh so a dead
+    first poll raises ConfigEntryNotReady and HA retries setup, instead of
+    setting up entities that stay unavailable until the next full interval."""
+
+    def test_setup_uses_first_refresh(self):
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "custom_components",
+            "aeronet", "__init__.py")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        setup = src.split("async def async_unload_entry")[0]
+        self.assertIn(
+            "async_config_entry_first_refresh", setup,
+            "async_setup_entry must call async_config_entry_first_refresh "
+            "on the data coordinator (ConfigEntryNotReady semantics)")
+
+
+class OptionsListenerRefreshTests(unittest.TestCase):
+    """v0.5.0 F3: an options save with unchanged values must not trigger a
+    full multi-product fetch burst; only real changes may refresh."""
+
+    def _run(self, entry_data, entry_options, snapshot):
+        import tests.ha_stubs as ha_stubs
+        ha_stubs.install()
+        cc_dir = os.path.join(os.path.dirname(__file__), "..",
+                              "custom_components")
+        if cc_dir not in sys.path:
+            sys.path.insert(0, cc_dir)
+        import importlib
+        mod = importlib.import_module("custom_components.aeronet")
+        calls = []
+        coord = types.SimpleNamespace(
+            products=["AOD"],
+            configure=lambda **kw: calls.append(("configure", kw)),
+            async_refresh=lambda: calls.append(("refresh",)) or _noop_coro(),
+        )
+        hass = types.SimpleNamespace(
+            data={"aeronet": {"E1": {
+                "data": coord, "sites_url": "u",
+                "config": dict(snapshot),
+            }}},
+            config_entries=types.SimpleNamespace(
+                async_reload=lambda eid: calls.append(("reload",))
+                or _noop_coro()),
+        )
+        entry = types.SimpleNamespace(
+            entry_id="E1", data=entry_data, options=entry_options)
+        asyncio.run(mod._async_update_listener(hass, entry))
+        return calls
+
+    def test_noop_options_save_does_not_refresh(self):
+        data = {"email": "", "level": "1.5", "interval_min": 60,
+                "products": ["AOD"], "site": "Madrid"}
+        calls = self._run(data, {}, self._snapshot())
+        self.assertEqual(calls, [])
+
+    def _snapshot(self):
+        from const import SITE_LIST_URL
+        return {"email": "", "level": "1.5", "interval_min": 60,
+                "products": ["AOD"], "site_list_url": SITE_LIST_URL}
+
+    def test_changed_level_configures_and_refreshes(self):
+        data = {"email": "", "level": "2.0", "interval_min": 60,
+                "products": ["AOD"]}
+        calls = self._run(data, {}, self._snapshot())
+        self.assertEqual(calls[0][0], "configure")
+        self.assertIn(("refresh",), calls)
+
+    def test_site_only_change_does_not_refresh_via_listener(self):
+        """A station switch persists entry.data (fires this listener) but the
+        select entity already refreshes through set_site: the listener must
+        stay silent or every station change doubles the NASA requests."""
+        data = {"email": "", "level": "1.5", "interval_min": 60,
+                "products": ["AOD"], "site": "Valladolid"}
+        calls = self._run(data, {}, self._snapshot())
+        self.assertEqual(calls, [])
+
+
+def _noop_coro():
+    async def _n():
+        return None
+    return _n()
+
+
 if __name__ == "__main__":
     unittest.main()

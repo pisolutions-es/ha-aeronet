@@ -23,7 +23,12 @@ from .const import (
     ENTRY_VERSION,
     SITE_LIST_URL,
 )
-from .coordinators import AeronetDataCoordinator, get_sites_coordinator
+from .coordinators import (
+    AeronetDataCoordinator,
+    get_sites_coordinator,
+    hold_sites_coordinator,
+    release_sites_coordinator,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,37 +45,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_SITE_LIST_URL, SITE_LIST_URL
     )
     sites_coord = get_sites_coordinator(hass, session, url=sites_url)
+    # v0.5.0: refcount so the shared site coordinator stops polling when the
+    # last entry using it is unloaded (memory/timer leak otherwise).
+    hold_sites_coordinator(sites_url)
+    entry.async_on_unload(lambda: release_sites_coordinator(sites_url))
     if sites_coord.data is None:
         await sites_coord.async_load_storage()
     if sites_coord.data is None:
         hass.async_create_task(sites_coord.async_refresh())
 
+    merged = {**entry.data, **entry.options}
     data_coord = AeronetDataCoordinator(
         hass,
         session,
         email=entry.data.get(CONF_EMAIL, ""),
-        level={**entry.data, **entry.options}.get(CONF_LEVEL, DEFAULT_LEVEL),
-        interval_min={**entry.data, **entry.options}.get(CONF_INTERVAL_MIN, 60),
+        level=merged.get(CONF_LEVEL, DEFAULT_LEVEL),
+        interval_min=merged.get(CONF_INTERVAL_MIN, 60),
         site=entry.data.get(CONF_SITE, DEFAULT_SITE),
-        products=(
-            {**entry.data, **entry.options}.get(CONF_PRODUCTS)
-            or list(DEFAULT_PRODUCTS)
-        ),
+        products=(merged.get(CONF_PRODUCTS) or list(DEFAULT_PRODUCTS)),
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "data": data_coord,
         "sites": sites_coord,
-        "sites_url": sites_url,
-        # Snapshot of the channel selection in effect for this setup, so
-        # the update listener can tell a channel change from other edits.
-        "channels": list(
-            {**entry.data, **entry.options}.get(CONF_CHANNELS) or []
-        ),
+        # v0.5.0 snapshot of every option the update listener compares
+        # against, so saving the dialog without changing anything does not
+        # trigger a full multi-product fetch burst.
+        "config": {
+            CONF_EMAIL: merged.get(CONF_EMAIL, ""),
+            CONF_LEVEL: merged.get(CONF_LEVEL, DEFAULT_LEVEL),
+            CONF_INTERVAL_MIN: int(merged.get(CONF_INTERVAL_MIN, 60)),
+            CONF_PRODUCTS: list(merged.get(CONF_PRODUCTS)
+                                or DEFAULT_PRODUCTS),
+            CONF_CHANNELS: list(merged.get(CONF_CHANNELS) or []),
+            CONF_SITE_LIST_URL: sites_url,
+            # Station changes are persisted to entry.data by the select
+            # entity (which fires this listener) but applied through
+            # set_site(); the listener must not fetch a second time.
+            CONF_SITE: entry.data.get(CONF_SITE, DEFAULT_SITE),
+        },
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-    await data_coord.async_refresh()
+    # v0.5.0: first_refresh raises ConfigEntryNotReady when the very first
+    # poll fails, so HA retries setup instead of leaving entities
+    # unavailable until the next full poll interval.
+    await data_coord.async_config_entry_first_refresh()
     return True
 
 
@@ -133,34 +153,54 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reconfigure email/level/interval when options change.
+    """React to config-entry updates.
 
-    A products change requires re-creating entities, so the entry is
-    reloaded in that case instead of reconfigured in place.
+    Compares the new merged options against the snapshot taken at setup:
+    a save that changed nothing must not reconfigure, reload, or refresh
+    (each refresh is a full multi-product request burst against NASA).
+    A products/channels/site-list-source change requires re-creating
+    entities, so the entry is reloaded in those cases.
     """
     store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if not store:
         return
     coord: AeronetDataCoordinator = store["data"]
     merged = {**entry.data, **entry.options}
+    snap = store.get("config") or {}
+
     new_products = list(merged.get(CONF_PRODUCTS) or DEFAULT_PRODUCTS)
-    if sorted(new_products) != sorted(coord.products):
+    if sorted(new_products) != sorted(snap.get(CONF_PRODUCTS)
+                                      or DEFAULT_PRODUCTS):
         await hass.config_entries.async_reload(entry.entry_id)
         return
     if sorted(merged.get(CONF_CHANNELS) or []) != \
-            sorted(store.get("channels") or []):
+            sorted(snap.get(CONF_CHANNELS) or []):
         # Channel selection changed: newly selected channels may need
         # entities that do not exist yet, so rebuild the entity set.
         await hass.config_entries.async_reload(entry.entry_id)
         return
     if merged.get(CONF_SITE_LIST_URL, SITE_LIST_URL) != \
-            store.get("sites_url", SITE_LIST_URL):
+            snap.get(CONF_SITE_LIST_URL, SITE_LIST_URL):
         # Station-list source changed: rebind the sites coordinator.
         await hass.config_entries.async_reload(entry.entry_id)
         return
+
+    new_email = merged.get(CONF_EMAIL, "")
+    new_level = merged.get(CONF_LEVEL, DEFAULT_LEVEL)
+    new_interval = int(merged.get(CONF_INTERVAL_MIN, 60))
+    changed = (
+        new_email != snap.get(CONF_EMAIL, "")
+        or new_level != snap.get(CONF_LEVEL, DEFAULT_LEVEL)
+        or new_interval != snap.get(CONF_INTERVAL_MIN, 60)
+    )
+    # A station-only change fires this listener because the select entity
+    # persists entry.data, but the select already re-polls via set_site();
+    # refreshing here would double every station-switch's request burst.
+    if not changed:
+        return
     coord.configure(
-        email=merged.get(CONF_EMAIL, ""),
-        level=merged.get(CONF_LEVEL, DEFAULT_LEVEL),
-        interval_min=int(merged.get(CONF_INTERVAL_MIN, 60)),
+        email=new_email,
+        level=new_level,
+        interval_min=new_interval,
     )
     await coord.async_refresh()
