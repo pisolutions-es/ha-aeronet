@@ -12,7 +12,9 @@ Adding the integration creates an "AERONET · <station>" device with:
 
 | Entity | Description |
 |---|---|
-| `sensor.aeronet_<station>_aod` | AOD at latest valid point. Wavelength: **500 nm** (fallback 551/555/560 nm). Includes `today_series` attribute with today's complete time series from 00:00 UTC. |
+| `sensor.aeronet_<station>_aod` | AOD at latest valid point. Wavelength: **500 nm** (fallback 551/555/560 nm). Includes `today_series` attribute with today's complete time series from 00:00 UTC and `channels_latest` with the last value of every wavelength channel (see *Wavelength channels*). |
+| `sensor.aeronet_<station>_aod_<nm>nm` | One sensor per AOD wavelength channel (e.g. `aod_340nm` … `aod_1640nm`), created automatically for every wavelength the station actually reports. Excludes 500 nm (that is the main `aod` sensor). See *Wavelength channels*. |
+| `sensor.aeronet_<station>_ssa_<nm>nm` | One sensor per SSA wavelength channel (typically 440/675/870/1020 nm) when the SSA product is enabled; the preferred channel stays in `sensor.aeronet_<station>_ssa`. |
 | `sensor.aeronet_<station>_aod_24h_mean` | Mean AOD from the last 24 hours |
 | `sensor.aeronet_<station>_aod_daily` | Today's partial daily average (AERONET AVG=20). Includes `daily_series_7d` attribute with the last 7 daily averages. |
 | `sensor.aeronet_<station>_sda_fine` | SDA Fine Mode AOD at 500nm (Fine_Mode_AOD_500nm). Only present if SDA product is enabled. |
@@ -58,6 +60,42 @@ appear in the HACS explorer.
 
 Each enabled product creates its own sensor entities. Products use different AERONET endpoints and update intervals.
 
+### Wavelength channels (v0.4.0)
+
+AERONET reports aerosol optical depth at many wavelengths at once (up to
+~20 columns, 340–1640 nm, depending on the station's photometer). Instead
+of exposing only one preferred wavelength, the integration now keeps **all
+channels found in the data**:
+
+- **Automatic detection**: channel sets are discovered from what the
+  station actually reports (a column that is always `-999` produces no
+  entity), so Valladolid shows `aod_340nm` … `aod_1640nm` while another
+  station may show fewer.
+- **The product picker is unchanged**: channels appear as soon as the AOD
+  product is selected (and SSA channels when SSA is enabled). The main
+  `aod` sensor keeps its exact entity_id and behavior, so existing
+  dashboards keep working.
+- **Configuration**: the options dialog (⋙ on the integration card) has a
+  *Wavelength channels* multi-select, pre-filled with the channels detected
+  for your station. Deselecting a channel makes its sensor `unavailable`
+  (its history is kept). Empty/absent selection = all detected channels,
+  which is the default for fresh installs and migrated v0.3.x entries.
+- **Attributes**: the main `aod` (and `ssa`) sensor carries
+  `channels_latest`, a compact `{ "AOD 340nm": 0.043, ... }` spectrum map
+  — a single-entity way to chart AOD(λ) like NASA's official product
+  pages. Each channel sensor carries its own `today_series` and
+  `recent_points_24h` for per-channel ApexCharts cards.
+- **Attribute size limit**: Home Assistant's recorder refuses state
+  objects whose attributes exceed **16 KiB**. Channel sensors therefore
+  build their attributes under a 14 KiB budget: if a station's series
+  would not fit, `recent_points_24h` is dropped first, then
+  `today_series`, and the attribute `series_limited: true` marks the
+  omission. The complete full-day series always remain on the main 500 nm
+  `aod` sensor; `channels_latest` is small and never dropped.
+- **VOL has no wavelength channels**: its columns (VolC-T/F/C, REff-T) are
+  size-retrieval components, not wavelengths, so the VOL product keeps its
+  single sensor with component attributes.
+
 ## Technical details
 
 ### Data intervals and endpoints
@@ -73,11 +111,13 @@ Each enabled product creates its own sensor entities. Products use different AER
 - Multi-product fetching with partial failure tolerance (failed products keep
   previous data) and automatic 30-day window widening when the 7-day payload
   is empty.
-- aiohttp client with identifiable User-Agent (`home-assistant-aeronet/0.3`),
+- aiohttp client with identifiable User-Agent (`home-assistant-aeronet/0.4`),
   15s connect / 60s total timeout, 2 retries with exponential backoff +
   jitter and `Retry-After` honored on HTTP 429.
-- Config entry migration: v1→v2 adds products field for existing installs;
-  the station-list source option falls back to the default when absent.
+- Config entry migration: v1→v2 adds products, v2→v3 introduces the
+  channel layer (selection lives in entry options; a missing selection
+  means all channels detected in the data), so existing installs upgrade
+  in place and immediately see every channel.
 
 ## Tests
 
@@ -86,9 +126,11 @@ python3 -m unittest discover -s tests
 ```
 
 85+ tests covering real fixtures (active v3921 station list, Valladolid data
-across all products, CSV parsing, URL generation incl. the widened 30-day
+across all products and all wavelength channels 340–1640 nm, CSV parsing,
+URL generation incl. the widened 30-day
 window, HTTP retry/Retry-After behaviour, site-list disk persistence and
-dedupe, sensor state mapping). Stdlib only (aiohttp/Home Assistant stubbed).
+dedupe, sensor state mapping, config-entry migrations v1→v3 and the
+attribute-size budget rule). Stdlib only (aiohttp/Home Assistant stubbed).
 
 ## Known limitations
 
