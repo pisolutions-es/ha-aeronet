@@ -68,7 +68,7 @@ sys.path.insert(
 
 import client as client_mod  # noqa: E402
 from client import AeronetClient, _retry_after_seconds  # noqa: E402
-from const import MAX_RETRIES, RETRY_AFTER_MAX  # noqa: E402
+from const import MAX_RETRIES, RETRY_AFTER_MAX, RETRY_BACKOFF  # noqa: E402
 from parsers import AeronetError  # noqa: E402
 
 
@@ -247,6 +247,50 @@ class EmailParamTests(unittest.TestCase):
         _run(c._get_text("http://x"))
         from const import USER_AGENT
         self.assertEqual(requests_headers[0]["User-Agent"], USER_AGENT)
+
+
+class RetryAfterEdgeCaseTests(unittest.TestCase):
+    """v0.5.0 T6: edge cases in Retry-After header parsing.
+
+    The parser (client._retry_after_seconds) accepts only the delta-seconds
+    form, bounded to [1, RETRY_AFTER_MAX] (const.py). Anything unparseable
+    (missing, HTTP-date, garbage) falls back to RETRY_BACKOFF * 2 plus
+    0..1s of uniform jitter.
+    """
+
+    def test_numeric_within_bounds_returned_verbatim(self):
+        self.assertEqual(_retry_after_seconds("60"), 60.0)
+        self.assertEqual(_retry_after_seconds("5"), 5.0)
+        self.assertEqual(_retry_after_seconds("1"), 1.0)
+
+    def test_numeric_clamped_to_range(self):
+        # Floor: 0 and negatives clamp up to 1.0.
+        self.assertEqual(_retry_after_seconds("0"), 1.0)
+        self.assertEqual(_retry_after_seconds("-30"), 1.0)
+        # Ceiling: values above RETRY_AFTER_MAX clamp down to the cap.
+        self.assertEqual(_retry_after_seconds("600"), float(RETRY_AFTER_MAX))
+        self.assertEqual(_retry_after_seconds("99999"), float(RETRY_AFTER_MAX))
+
+    def test_http_date_falls_back_to_backoff_schedule(self):
+        # RFC 1123 dates are not parseable as delta-seconds: the fallback
+        # is RETRY_BACKOFF * 2 + jitter (jitter in [0, 1) -> ~10-11s).
+        from const import RETRY_BACKOFF
+        seconds = _retry_after_seconds("Wed, 21 Oct 2026 07:28:00 GMT")
+        self.assertIsInstance(seconds, float)
+        self.assertGreaterEqual(seconds, RETRY_BACKOFF * 2)
+        self.assertLess(seconds, RETRY_BACKOFF * 2 + 1.0)
+
+    def test_garbage_falls_back_to_backoff_schedule(self):
+        from const import RETRY_BACKOFF
+        for bad in (None, "", "not-a-number", "120 seconds", "3.14x"):
+            seconds = _retry_after_seconds(bad)
+            self.assertIsInstance(seconds, float)
+            self.assertGreaterEqual(seconds, RETRY_BACKOFF * 2)
+            self.assertLess(seconds, RETRY_BACKOFF * 2 + 1.0)
+
+    def test_floating_point_numeric_accepted(self):
+        # float("3.5") parses fine; it is clamped like any numeric value.
+        self.assertEqual(_retry_after_seconds("3.5"), 3.5)
 
 
 if __name__ == "__main__":

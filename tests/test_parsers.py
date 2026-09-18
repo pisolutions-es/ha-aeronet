@@ -155,6 +155,50 @@ class TestDataCsvParser(unittest.TestCase):
         self.assertAlmostEqual(data.points[0].aod, 0.25)
 
 
+class TestChannelDetectionEdgeCases(unittest.TestCase):
+    """v0.5.0: channel detection and row resilience in data CSV payloads."""
+
+    BANNER = (
+        "AERONET Data Download (Version 3 Direct Sun)\n"
+        "AERONET Version 3\n"
+        "Version 3: AOD Level 1.5\n"
+        "The following data are cloud cleared.\n"
+    )
+
+    def test_all_nodata_station_yields_no_aod_channels(self):
+        # A station whose every AOD_*nm column is -999 (no valid measurement
+        # in the window) must detect zero channels even when the aod family
+        # is requested: a channel only exists with >=1 valid point.
+        data = parsers.parse_data_csv(
+            fixture("valladolid_aod_all_nodata.csv"), channel_families=("aod",)
+        )
+        self.assertEqual(data.points, [])
+        self.assertEqual(parsers.detect_channels(data), [])
+        # The channel slots exist (columns were present) but hold no points.
+        self.assertIn("aod_1020nm", data.values)
+        self.assertEqual(data.values["aod_1020nm"], [])
+
+    def test_malformed_rows_interleaved_are_skipped(self):
+        # Rows that are truncated, carry unparseable dates/times, an empty
+        # site cell, or a non-numeric value are dropped; the valid rows
+        # around them survive in order.
+        header = "AERONET_Site,Date(dd:mm:yyyy),Time(hh:mm:ss),AOD_500nm"
+        rows = [
+            "Valladolid,17:09:2026,12:00:00,0.123",
+            "Valladolid,17:09:2026",                       # truncated
+            "Valladolid,17:09:2026,12:15:00,0.456",
+            "Valladolid,17:09:2026,25:99:99,0.789",        # impossible time
+            ",17:09:2026,12:30:00,0.999",                  # empty site cell
+            "Valladolid,17:09:2026,12:45:00,oops",          # non-numeric AOD
+            "Valladolid,17:09:2026,13:00:00,0.321",
+        ]
+        body = self.BANNER + header + "\n" + "\n".join(rows) + "\n"
+        data = parsers.parse_data_csv(body)
+        self.assertEqual([p.aod for p in data.points],
+                         [0.123, 0.456, 0.321])
+        self.assertEqual(data.meta.name, "Valladolid")
+
+
 class TestSiteMismatchGuard(unittest.TestCase):
     """AERONET silently drops an unmatched site parameter and replies with
     every station's rows; the parser must reject such payloads."""
