@@ -131,12 +131,14 @@ channels found in the data**:
 python3 -m unittest discover -s tests
 ```
 
-85+ tests covering real fixtures (active v3921 station list, Valladolid data
+184 tests covering real fixtures (active v3921 station list, Valladolid data
 across all products and all wavelength channels 340–1640 nm, CSV parsing,
 URL generation incl. the widened 30-day
 window, HTTP retry/Retry-After behaviour, site-list disk persistence and
 dedupe, sensor state mapping, config-entry migrations v1→v3 and the
-attribute-size budget rule). Stdlib only (aiohttp/Home Assistant stubbed).
+attribute-size budget rule). Real behavior tests cover the setup/unload
+lifecycle, the update listener, the station select, both config flows and
+the repair-issue registry. Stdlib only (aiohttp/Home Assistant stubbed).
 
 ## Known limitations
 

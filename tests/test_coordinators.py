@@ -75,8 +75,6 @@ class PayloadIsEmptyTests(unittest.TestCase):
 
 class SiteListStorageTests(unittest.TestCase):
     def setUp(self):
-        coordinators.reset_site_list_state() if hasattr(
-            coordinators, "reset_site_list_state") else None
         coordinators._sites_cache.clear()
         coordinators._sites_saved_at.clear()
         coordinators._sites_coordinators.clear()
