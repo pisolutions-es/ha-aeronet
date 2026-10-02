@@ -51,5 +51,21 @@ class TestUserAgent(unittest.TestCase):
         self.assertNotIn("\r", const.USER_AGENT)
 
 
+class TestManifest(unittest.TestCase):
+    """m9: repair-issue linking and HACS maintainership metadata."""
+
+    def test_issue_tracker_present(self):
+        self.assertEqual(
+            _manifest()["issue_tracker"],
+            "https://github.com/pisolutions-es/ha-aeronet/issues",
+        )
+
+    def test_codeowners_present(self):
+        self.assertEqual(_manifest()["codeowners"], ["@pisolutions-es"])
+
+    def test_const_repo_url_matches_manifest_tracker(self):
+        self.assertIn(const.REPO_URL, _manifest()["issue_tracker"])
+
+
 if __name__ == "__main__":
     unittest.main()

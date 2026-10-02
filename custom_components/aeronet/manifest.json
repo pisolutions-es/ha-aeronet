@@ -1,12 +1,13 @@
 {
   "domain": "aeronet",
   "name": "NASA AERONET",
-  "codeowners": [],
+  "codeowners": ["@pisolutions-es"],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://aeronet.gsfc.nasa.gov/print_web_data_help_v3_new.html",
   "integration_type": "service",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/pisolutions-es/ha-aeronet/issues",
   "requirements": [],
   "version": "0.5.1"
 }
