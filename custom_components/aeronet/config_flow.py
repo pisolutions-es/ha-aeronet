@@ -30,7 +30,7 @@ from .const import (
     SITE_LIST_URL,
     SITE_LIST_URL_OPTIONS,
 )
-from .coordinators import get_sites_coordinator
+from .coordinators import get_sites_coordinator, detected_channels
 from .parsers import channel_label, dedupe_display_names, display_to_site_name
 
 _LOGGER = logging.getLogger(__name__)
@@ -241,10 +241,6 @@ def _channel_options(hass, entry) -> list[dict]:
     except Exception:  # pragma: no cover - defensive
         return []
     if data is None:
-        return []
-    try:
-        from .coordinators import detected_channels
-    except ImportError:  # pragma: no cover
         return []
     return [
         {"value": c, "label": channel_label(c)}

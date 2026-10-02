@@ -13,10 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-try:  # package import inside Home Assistant
-    from .const import SITES_REFRESH_DAYS
-except ImportError:  # flat import in stdlib-only unit tests
-    from const import SITES_REFRESH_DAYS  # type: ignore
+from .const import SITES_REFRESH_DAYS
 
 STORAGE_VERSION = 1
 

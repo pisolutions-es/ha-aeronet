@@ -7,13 +7,8 @@ import os
 import sys
 import unittest
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "aeronet"),
-)
-
-import parsers  # noqa: E402
-import site_cache  # noqa: E402
+from custom_components.aeronet import parsers  # noqa: E402
+from custom_components.aeronet import site_cache  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 

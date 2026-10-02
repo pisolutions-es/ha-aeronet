@@ -61,15 +61,10 @@ def _install_stub():
 _install_stub()
 
 import os
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "aeronet"),
-)
-
-import client as client_mod  # noqa: E402
-from client import AeronetClient, _retry_after_seconds  # noqa: E402
-from const import MAX_RETRIES, RETRY_AFTER_MAX, RETRY_BACKOFF  # noqa: E402
-from parsers import AeronetError  # noqa: E402
+from custom_components.aeronet import client as client_mod  # noqa: E402
+from custom_components.aeronet.client import AeronetClient, _retry_after_seconds  # noqa: E402
+from custom_components.aeronet.const import MAX_RETRIES, RETRY_AFTER_MAX, RETRY_BACKOFF  # noqa: E402
+from custom_components.aeronet.parsers import AeronetError  # noqa: E402
 
 
 class RetrySpy:
@@ -210,7 +205,7 @@ class EmailParamTests(unittest.TestCase):
 
     def test_no_email_param_in_any_url(self):
         import datetime as dt
-        import urls as urls_mod
+        from custom_components.aeronet import urls as urls_mod
         now = dt.datetime(2026, 9, 17, tzinfo=dt.timezone.utc)
         for fn in (urls_mod.build_data_url, urls_mod.build_daily_url,
                    urls_mod.build_sda_url):
@@ -245,7 +240,7 @@ class EmailParamTests(unittest.TestCase):
 
         c = AeronetClient(HeaderSpy([_StubResp(body="x")]))
         _run(c._get_text("http://x"))
-        from const import USER_AGENT
+        from custom_components.aeronet.const import USER_AGENT
         self.assertEqual(requests_headers[0]["User-Agent"], USER_AGENT)
 
 
@@ -274,14 +269,14 @@ class RetryAfterEdgeCaseTests(unittest.TestCase):
     def test_http_date_falls_back_to_backoff_schedule(self):
         # RFC 1123 dates are not parseable as delta-seconds: the fallback
         # is RETRY_BACKOFF * 2 + jitter (jitter in [0, 1) -> ~10-11s).
-        from const import RETRY_BACKOFF
+        from custom_components.aeronet.const import RETRY_BACKOFF
         seconds = _retry_after_seconds("Wed, 21 Oct 2026 07:28:00 GMT")
         self.assertIsInstance(seconds, float)
         self.assertGreaterEqual(seconds, RETRY_BACKOFF * 2)
         self.assertLess(seconds, RETRY_BACKOFF * 2 + 1.0)
 
     def test_garbage_falls_back_to_backoff_schedule(self):
-        from const import RETRY_BACKOFF
+        from custom_components.aeronet.const import RETRY_BACKOFF
         for bad in (None, "", "not-a-number", "120 seconds", "3.14x"):
             seconds = _retry_after_seconds(bad)
             self.assertIsInstance(seconds, float)

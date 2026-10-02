@@ -22,16 +22,11 @@ import unittest
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "custom_components"),
 )
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "aeronet"),
-)
-
 from tests.ha_stubs import install as _install_ha_stubs  # noqa: E402
 
 _install_ha_stubs()
 
-import parsers  # noqa: E402
+from custom_components.aeronet import parsers  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
@@ -240,7 +235,7 @@ class TestChannelEntitySurface(unittest.TestCase):
         past the recorder's 16 KiB cap and the state is silently dropped."""
         import datetime as dt
         from custom_components.aeronet import sensor as sm
-        from parsers import AeronetData, SiteMeta, AodPoint
+        from custom_components.aeronet.parsers import AeronetData, SiteMeta, AodPoint
         data = AeronetData(meta=SiteMeta(name="Madrid", latitude=1,
                                          longitude=2, elevation=3))
         base = dt.datetime(2026, 9, 10, tzinfo=dt.timezone.utc)

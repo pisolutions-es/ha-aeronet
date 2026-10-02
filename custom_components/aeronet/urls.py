@@ -5,22 +5,13 @@ import datetime as dt
 from typing import Any
 from urllib.parse import urlencode
 
-try:  # when imported as part of the custom_components.aeronet package
-    from .const import (
-        DATA_WINDOW_DAYS,
-        INVERSION_LEVELS,
-        INVERSION_WEB_SERVICE_URL,
-        LEVELS,
-        WEB_SERVICE_URL,
-    )
-except ImportError:  # flat import in stdlib-only unit tests
-    from const import (  # type: ignore
-        DATA_WINDOW_DAYS,
-        INVERSION_LEVELS,
-        INVERSION_WEB_SERVICE_URL,
-        LEVELS,
-        WEB_SERVICE_URL,
-    )
+from .const import (
+    DATA_WINDOW_DAYS,
+    INVERSION_LEVELS,
+    INVERSION_WEB_SERVICE_URL,
+    LEVELS,
+    WEB_SERVICE_URL,
+)
 
 
 def _window(now: dt.datetime, days: int = DATA_WINDOW_DAYS) -> tuple:

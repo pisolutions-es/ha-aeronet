@@ -16,13 +16,8 @@ import sys
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "aeronet"),
-)
-
-import parsers  # noqa: E402
-import urls  # noqa: E402
+from custom_components.aeronet import parsers  # noqa: E402
+from custom_components.aeronet import urls  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 

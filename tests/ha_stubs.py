@@ -156,14 +156,17 @@ def install() -> None:
     stor = _mod("homeassistant.helpers.storage")
     if not hasattr(stor, "Store"):
         class Store:
+            """In-memory fake of the HA storage helper (shared payload dict)."""
+            data: dict = {}
+
             def __init__(self, hass, version, key, private=False):
                 self.key = key
 
             async def async_load(self):
-                return None
+                return Store.data.get(self.key)
 
             async def async_save(self, payload):
-                pass
+                Store.data[self.key] = payload
         stor.Store = Store
 
     ir = _mod("homeassistant.helpers.issue_registry")

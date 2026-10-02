@@ -12,60 +12,34 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-try:  # package import inside Home Assistant
-    from .client import AeronetClient
-    from .const import (
-        CONF_LEVEL,
-        DATA_WINDOW_DAYS,
-        DATA_WINDOW_WIDE_DAYS,
-        DEFAULT_PRODUCTS,
-        DOMAIN,
-        PRODUCTS_INVERSION,
-        PRODUCT_AOD,
-        PRODUCT_SDA,
-        SITES_REFRESH_DAYS,
-        SITE_LIST_URL,
-    )
-    from .parsers import (
-        AeronetData,
-        AeronetError,
-        Site,
-        normalize_site,
-    )
-    from .site_cache import (
-        STORAGE_VERSION,
-        is_stale,
-        sites_from_payload,
-        sites_to_payload,
-        storage_key,
-    )
-except ImportError:  # flat import in stdlib-only unit tests
-    from client import AeronetClient  # type: ignore
-    from const import (  # type: ignore
-        CONF_LEVEL,
-        DATA_WINDOW_DAYS,
-        DATA_WINDOW_WIDE_DAYS,
-        DEFAULT_PRODUCTS,
-        DOMAIN,
-        PRODUCTS_INVERSION,
-        PRODUCT_AOD,
-        PRODUCT_SDA,
-        SITES_REFRESH_DAYS,
-        SITE_LIST_URL,
-    )
-    from parsers import (  # type: ignore
-        AeronetData,
-        AeronetError,
-        Site,
-        normalize_site,
-    )
-    from site_cache import (  # type: ignore
-        STORAGE_VERSION,
-        is_stale,
-        sites_from_payload,
-        sites_to_payload,
-        storage_key,
-    )
+from .client import AeronetClient
+from .const import (
+    CONF_LEVEL,
+    DATA_WINDOW_DAYS,
+    DATA_WINDOW_WIDE_DAYS,
+    DEFAULT_PRODUCTS,
+    DOMAIN,
+    PRODUCTS_INVERSION,
+    PRODUCT_AOD,
+    PRODUCT_SDA,
+    SITES_REFRESH_DAYS,
+    SITE_LIST_URL,
+)
+from .parsers import (
+    AeronetData,
+    AeronetError,
+    Site,
+    detect_channels,
+    normalize_site,
+    active_channels as _filter_channels,
+)
+from .site_cache import (
+    STORAGE_VERSION,
+    is_stale,
+    sites_from_payload,
+    sites_to_payload,
+    storage_key,
+)
 
 
 def _merge(base: AeronetData | None, other: AeronetData) -> AeronetData:
@@ -95,10 +69,6 @@ def detected_channels(data: AeronetData | None) -> list[str]:
     """Channel ids with valid data in the current payload (sorted by nm)."""
     if data is None:
         return []
-    try:
-        from .parsers import detect_channels
-    except ImportError:  # flat import in stdlib-only unit tests
-        from parsers import detect_channels  # type: ignore
     return detect_channels(data)
 
 
@@ -107,14 +77,10 @@ def active_channels(data: AeronetData | None,
     """Channels to expose: configured ∩ detected, minus the main-sensor
     wavelengths (those already have their own sensor and must not be
     duplicated as channel entities)."""
-    try:
-        from .parsers import active_channels as _filter
-    except ImportError:  # flat import in stdlib-only unit tests
-        from parsers import active_channels as _filter  # type: ignore
     if data is None:
         return []
     detected = detected_channels(data)
-    chosen = _filter(detected, configured)
+    chosen = _filter_channels(detected, configured)
     mains = {v for k, v in data.meta.extras.items()
              if k.startswith("main_channel_")}
     return [c for c in chosen if c not in mains]
@@ -149,7 +115,6 @@ class SiteListCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, session: aiohttp.ClientSession,
                  *, url: str = SITE_LIST_URL) -> None:
-        self.url = url
         self._url = url
         self._client = AeronetClient(session)
         super().__init__(

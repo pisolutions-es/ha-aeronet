@@ -7,12 +7,7 @@ import sys
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "aeronet"),
-)
-
-import urls as urls_mod  # noqa: E402
+from custom_components.aeronet import urls as urls_mod  # noqa: E402
 
 
 class TestBuildDataUrl(unittest.TestCase):
@@ -102,7 +97,7 @@ class TestBuildDataUrl(unittest.TestCase):
 
 class TestSiteListUrls(unittest.TestCase):
     def test_default_source_is_active_v3921(self):
-        import const
+        from custom_components.aeronet import const
         self.assertEqual(
             const.SITE_LIST_URL,
             "https://aeronet.gsfc.nasa.gov/aeronet_locations_v3921.txt",

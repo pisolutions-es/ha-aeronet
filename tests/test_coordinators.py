@@ -1,9 +1,11 @@
 """Tests for coordinator disk-cache persistence and 30-day widening.
 
 Home Assistant is not installed in the host test env, so minimal module
-stubs stand in; coordinators are constructed via __new__ (bypassing the
-DataUpdateCoordinator base __init__) and their update paths are driven
-directly with scripted fake clients.
+stubs stand in (tests/ha_stubs.py, the single shared stub set — v0.6.0
+review m2: the integration is imported as a package, the duplicate flat
+import blocks are gone); coordinators are constructed via __new__
+(bypassing the DataUpdateCoordinator base __init__) and their update
+paths are driven directly with scripted fake clients.
 """
 from __future__ import annotations
 
@@ -14,92 +16,17 @@ import sys
 import types
 import unittest
 
-
-# --- Home Assistant module stubs (installed before importing coordinators)
-def _install_stubs():
-    ha = types.ModuleType("homeassistant")
-    core = types.ModuleType("homeassistant.core")
-
-    class HomeAssistant:  # minimal
-        def async_create_task(self, coro):
-            coro.close()  # never scheduled in tests
-
-    core.HomeAssistant = HomeAssistant
-
-    helpers = types.ModuleType("homeassistant.helpers")
-    upd = types.ModuleType("homeassistant.helpers.update_coordinator")
-    # Mock issue_registry
-    issue_reg = types.ModuleType("homeassistant.helpers.issue_registry")
-    
-    class IssueSeverity:
-        WARNING = "warning"
-    
-    def async_create_issue(*args, **kwargs):
-        pass
-    
-    def async_delete_issue(*args, **kwargs):
-        pass
-    
-    issue_reg.IssueSeverity = IssueSeverity
-    issue_reg.async_create_issue = async_create_issue 
-    issue_reg.async_delete_issue = async_delete_issue
-
-    class DataUpdateCoordinator:
-        def __init__(self, hass, logger, name=None, update_interval=None):
-            self.hass = hass
-            self.data = None
-            self.update_interval = update_interval
-
-        async def async_refresh(self):
-            pass
-
-    class UpdateFailed(Exception):
-        pass
-
-    upd.DataUpdateCoordinator = DataUpdateCoordinator
-    upd.UpdateFailed = UpdateFailed
-
-    stor = types.ModuleType("homeassistant.helpers.storage")
-
-    class Store:
-        """In-memory fake of the HA storage helper."""
-        data: dict = {}
-
-        def __init__(self, hass, version, key, private=False):
-            self.key = key
-
-        async def async_load(self):
-            return Store.data.get(self.key)
-
-        async def async_save(self, payload):
-            Store.data[self.key] = payload
-
-    stor.Store = Store
-
-    aiohttp_mod = types.ModuleType("aiohttp")
-    aiohttp_mod.ClientError = Exception
-    aiohttp_mod.ClientSession = object
-    aiohttp_mod.ClientTimeout = lambda **kw: None
-
-    sys.modules.setdefault("aiohttp", aiohttp_mod)
-    sys.modules["homeassistant"] = ha
-    sys.modules["homeassistant.core"] = core
-    sys.modules["homeassistant.helpers"] = helpers
-    sys.modules["homeassistant.helpers.update_coordinator"] = upd
-    sys.modules["homeassistant.helpers.issue_registry"] = issue_reg
-    sys.modules["homeassistant.helpers.storage"] = stor
-
-
-_install_stubs()
-
 sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "aeronet"),
+    0, os.path.join(os.path.dirname(__file__), "..", "custom_components"),
 )
 
-import coordinators  # noqa: E402
-import parsers  # noqa: E402
-import site_cache  # noqa: E402
+from tests.ha_stubs import install as _install_ha_stubs  # noqa: E402
+
+_install_ha_stubs()
+
+from custom_components.aeronet import coordinators  # noqa: E402
+from custom_components.aeronet import parsers  # noqa: E402
+from custom_components.aeronet import site_cache  # noqa: E402
 from homeassistant.helpers.storage import Store  # noqa: E402
 
 URL = "https://example.test/list.txt"
@@ -401,7 +328,7 @@ class OptionsListenerRefreshTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def _snapshot(self):
-        from const import SITE_LIST_URL
+        from custom_components.aeronet.const import SITE_LIST_URL
         return {"email": "", "level": "1.5", "interval_min": 60,
                 "products": ["AOD"], "site_list_url": SITE_LIST_URL}
 
@@ -436,7 +363,7 @@ class RepairIssueTests(unittest.TestCase):
         from unittest.mock import MagicMock
         
         # Import directly, not via custom_components
-        import coordinators
+        from custom_components.aeronet import coordinators
         
         # Mock hass and session
         hass = types.SimpleNamespace()
@@ -457,7 +384,7 @@ class RepairIssueTests(unittest.TestCase):
 
     def test_issue_id_from_entry_id(self):
         import types
-        import coordinators
+        from custom_components.aeronet import coordinators
         
         hass = types.SimpleNamespace()
         session = types.SimpleNamespace()
