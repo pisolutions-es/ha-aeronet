@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 Releases before v0.5.0 are described in the [GitHub releases](https://github.com/pisolutions-es/ha-aeronet/releases).
 
+## [0.5.1] - 2026-10-02
+
+### Fixed
+
+- **Setup retries no longer leak "ghost" coordinators (critical).** When
+  the first poll after a (re)start failed, every HA setup retry used to
+  construct a new data coordinator without shutting the previous one
+  down — and `DataUpdateCoordinator` reschedules itself in all paths, so
+  each failed attempt left a permanently polling ghost that duplicated
+  every request against NASA with zero listeners, unbounded over a long
+  outage. Setup is now ordered per HA's documentation (first refresh
+  BEFORE forwarding platforms) and a failed first refresh shuts its
+  coordinator down and releases the shared site-list hold before
+  re-raising, leaving no timers behind. The site-list refcount is also
+  idempotent per entry (repeated retries no longer inflate it past 1),
+  and releasing a shared coordinator now actually runs HA's coroutine
+  `async_shutdown()` (the old call-and-discard left the weekly poll
+  timer armed).
+- **Options flow: a first save no longer freezes the channel set.** The
+  dialog used to prefill every channel detected in the current payload
+  for entries without an explicit selection; saving untouched then
+  silently changed "absent = all channels" into "the set I saw that
+  day" (new wavelengths never appeared) and triggered a full entry
+  reload + fetch burst, breaking the "save without changes does not
+  refetch" guarantee. The dialog now preselects an explicit "All
+  channels (default)" sentinel that normalizes back to an absent
+  selection on save; explicit selections are unchanged.
+- **Station switch no longer blocks for minutes.** The
+  `select.select_option` service call awaited a full multi-product fetch
+  (worst case ~13 minutes with timeouts, backoff and Retry-After
+  waits). The re-poll now runs in the background; the switch is
+  persisted immediately and a rapid re-selection cancels the previous
+  in-flight fetch instead of stacking duplicate bursts.
+
 ## [0.5.0] - 2026-09-18
 
 ### Fixed
