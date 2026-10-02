@@ -111,7 +111,17 @@ def install() -> None:
                 return _flow_result(type="create_entry", **kw)
         ce.OptionsFlow = OptionsFlow
     if not hasattr(ce, "OptionsFlowWithConfigEntry"):
-        ce.OptionsFlowWithConfigEntry = ce.OptionsFlow
+        class OptionsFlowWithConfigEntry(OptionsFlow):
+            """HA 2024.11+ replacement for OptionsFlow.__init__(entry)."""
+
+            def __init__(self, config_entry=None):
+                super().__init__()
+                self._config_entry = config_entry
+
+            @property
+            def config_entry(self):
+                return self._config_entry
+        ce.OptionsFlowWithConfigEntry = OptionsFlowWithConfigEntry
 
     const = _mod("homeassistant.const")
     if not hasattr(const, "Platform"):

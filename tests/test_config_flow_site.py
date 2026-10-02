@@ -84,5 +84,36 @@ class FlowUniqueIdNormalizationTests(unittest.TestCase):
                 async_entries=lambda _domain: [entry]))
 
 
+class OptionsFlowEntryBindingTests(unittest.TestCase):
+    """m7: the flow uses OptionsFlowWithConfigEntry; the entry is reachable
+    via the `config_entry` property (no deprecated __init__ override)."""
+
+    def test_flow_reads_entry_via_config_entry_property(self):
+        entry = types.SimpleNamespace(
+            entry_id="E1", data={"site": "X"}, options={})
+        flow = config_flow.AeronetOptionsFlow(entry)
+        flow.hass = types.SimpleNamespace(data={})
+        self.assertIs(flow.config_entry, entry)
+        result = asyncio.run(flow.async_step_init(None))
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(result["step_id"], "init")
+
+    def test_untouched_save_normalizes_and_creates_entry(self):
+        entry = types.SimpleNamespace(
+            entry_id="E1",
+            data={"site": "X", "products": ["AOD"]},
+            options={})
+        flow = config_flow.AeronetOptionsFlow(entry)
+        # A user_input that carries the untouched sentinel normalizes away
+        # CONF_CHANNELS (absent = all channels detected).
+        result = asyncio.run(flow.async_step_init({
+            "email": "", "level": "1.5", "interval_min": 60,
+            "products": ["AOD"], "channels": [""],
+            "site_list_url": config_flow.SITE_LIST_URL,
+        }))
+        self.assertEqual(result["type"], "create_entry")
+        self.assertNotIn("channels", result["data"])
+
+
 if __name__ == "__main__":
     unittest.main()

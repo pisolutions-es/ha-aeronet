@@ -200,17 +200,18 @@ class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return AeronetOptionsFlow(config_entry)
 
 
-class AeronetOptionsFlow(config_entries.OptionsFlow):
-    """Tweak email/level/interval after setup (station changes via select)."""
+class AeronetOptionsFlow(config_entries.OptionsFlowWithConfigEntry):
+    """Tweak email/level/interval after setup (station changes via select).
 
-    def __init__(self, config_entry) -> None:
-        super().__init__()
-        self._entry = config_entry
+    v0.6.0 (review m7): OptionsFlowWithConfigEntry replaces the deprecated
+    ``OptionsFlow.__init__(config_entry)`` pattern (deprecated in HA
+    2024.11); the entry is available as ``self.config_entry``.
+    """
 
     async def async_step_init(self, user_input=None) -> FlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=_normalize_saved(user_input))
-        cur = {**self._entry.data, **self._entry.options}
+        cur = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -242,7 +243,8 @@ class AeronetOptionsFlow(config_entries.OptionsFlow):
                         default=_channels_default(cur),
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
-                            options=_channels_options(self.hass, self._entry),
+                            options=_channels_options(self.hass,
+                                                      self.config_entry),
                             multiple=True,
                             mode=selector.SelectSelectorMode.LIST,
                         )
