@@ -1,6 +1,9 @@
 """Constants for the NASA AERONET integration."""
 from __future__ import annotations
 
+import json as _json
+import os as _os
+
 DOMAIN = "aeronet"
 
 # Two official AERONET site lists with identical CSV layout:
@@ -22,9 +25,30 @@ INVERSION_WEB_SERVICE_URL = (
     "https://aeronet.gsfc.nasa.gov/cgi-bin/print_web_data_inv_v3"
 )
 
+REPO_URL = "https://github.com/pisolutions-es/ha-aeronet"
+
+
+def _manifest_version() -> str:
+    """Integration version, read from manifest.json (single source of truth).
+
+    v0.6.0 (review m1): the User-Agent version used to be hardcoded and
+    drifted from the manifest on every release (it advertised 0.4 while the
+    integration shipped 0.5.x). Reading the manifest at import keeps the
+    identifier NASA sees in sync with the installed release forever.
+    """
+    try:
+        path = _os.path.join(_os.path.dirname(__file__), "manifest.json")
+        with open(path, encoding="utf-8") as fh:
+            return str(_json.load(fh).get("version") or "unknown")
+    except Exception:  # pragma: no cover - a broken manifest must not block import
+        return "unknown"
+
+
+VERSION = _manifest_version()
+
 USER_AGENT = (
-    "home-assistant-aeronet/0.4 "
-    "(NASA AERONET custom integration; +https://github.com/home-assistant/core)"
+    f"home-assistant-aeronet/{VERSION} "
+    f"(NASA AERONET custom integration; +{REPO_URL})"
 )
 
 CONF_EMAIL = "email"

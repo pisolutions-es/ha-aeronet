@@ -166,6 +166,13 @@ def install() -> None:
                 pass
         stor.Store = Store
 
+    ir = _mod("homeassistant.helpers.issue_registry")
+    if not hasattr(ir, "async_create_issue"):
+        ir.IssueSeverity = types.SimpleNamespace(
+            WARNING="warning", ERROR="error")
+        ir.async_create_issue = lambda *a, **k: None
+        ir.async_delete_issue = lambda *a, **k: None
+
     upd = _mod("homeassistant.helpers.update_coordinator")
     if not hasattr(upd, "DataUpdateCoordinator"):
         class DataUpdateCoordinator:
