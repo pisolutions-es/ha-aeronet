@@ -20,7 +20,7 @@ Adding the integration creates an "AERONET · <station>" device with:
 | `sensor.aeronet_<station>_sda_fine` | SDA Fine Mode AOD at 500nm (Fine_Mode_AOD_500nm). Only present if SDA product is enabled. |
 | `sensor.aeronet_<station>_sda_coarse` | SDA Coarse Mode AOD at 500nm (Coarse_Mode_AOD_500nm). Includes `fine_mode_fraction` attribute. Only present if SDA product is enabled. |
 | `sensor.aeronet_<station>_ssa` | Single Scattering Albedo, preferred wavelength 440nm. Includes `wavelength` attribute. Only present if SSA product is enabled. |
-| `sensor.aeronet_<station>_vol` | Volume concentration VolC-T in µm³/cm³. Includes `vol_fine`, `vol_coarse`, `effective_radius` attributes. Only present if VOL product is enabled. |
+| `sensor.aeronet_<station>_vol` | Volume concentration VolC-T in µm³/cm³. Includes `column` (source CSV column) and `daily_mean` (same-day average) attributes. Only present if VOL product is enabled. |
 | `sensor.aeronet_<station>_last_data` | Timestamp of the latest data point (UTC internally; shown in your local time via the `timestamp` device class) |
 | `sensor.aeronet_<station>_latitude/longitude/elevation` | Station location |
 | `select.aeronet_<station>_station` | Dropdown to switch stations at runtime |
@@ -50,7 +50,8 @@ appear in the HACS explorer.
 - **Update interval**: 10–1440 min (default 60).
 - **Products**: Multi-select for AERONET data products to fetch (default: AOD only).
 - **Station list source** (options dialog): active stations (v3921, default)
-  or the full historical list.
+  or the full historical list. Changing it reloads the integration entry
+  (the site-list coordinator is rebound).
 
 ### Available Products
 - **AOD** (Aerosol Optical Depth): Direct-sun measurements, all points and daily averages
@@ -58,7 +59,9 @@ appear in the HACS explorer.
 - **SSA** (Single Scattering Albedo): Inversion product, wavelengths 440-1020nm  
 - **VOL** (Volume concentration): Inversion product, µm³/cm³ units
 
-Each enabled product creates its own sensor entities. Products use different AERONET endpoints and update intervals.
+Each enabled product creates its own sensor entities. All enabled products
+are fetched by a single coordinator per station at one shared update
+interval — only the AERONET endpoint differs between product families.
 
 ### Wavelength channels (v0.4.0)
 
@@ -86,12 +89,15 @@ channels found in the data**:
   pages. Each channel sensor carries its own `today_series` and
   `recent_points_24h` for per-channel ApexCharts cards.
 - **Attribute size limit**: Home Assistant's recorder refuses state
-  objects whose attributes exceed **16 KiB**. Channel sensors therefore
-  build their attributes under a 14 KiB budget: if a station's series
+  objects whose attributes exceed **16 KiB**. Sensors therefore build
+  their attributes under a 14 KiB budget: if a station's series
   would not fit, `recent_points_24h` is dropped first, then
-  `today_series`, and the attribute `series_limited: true` marks the
-  omission. The complete full-day series always remain on the main 500 nm
-  `aod` sensor; `channels_latest` is small and never dropped.
+  `today_series` (and per-product `*_series_24h`), and the attribute
+  `series_limited: true` marks the omission. This applies to **every**
+  sensor carrying raw series — the main 500 nm `aod` sensor included
+  (since v0.5.0): on a dense station its `today_series` is trimmed too,
+  while compact aggregates (`channels_latest`, `daily_mean_aod`) are kept
+  as long as possible.
 - **VOL has no wavelength channels**: its columns (VolC-T/F/C, REff-T) are
   size-retrieval components, not wavelengths, so the VOL product keeps its
   single sensor with component attributes.
@@ -100,7 +106,7 @@ channels found in the data**:
 
 ### Data intervals and endpoints
 - **AOD all-points**: Last 7 days, `AVG=10` (all available measurements)
-- **AOD daily averages**: Last 7 days, `AVG=20` (one value per day at solar noon)
+- **AOD daily averages**: Last 7 days, `AVG=20` (one row per calendar day, stamped 12:00 UTC)
 - **SDA products**: Last 7 days, `AVG=10`, separate direct-sun endpoint
 - **SSA/VOL products**: Last 7 days, `AVG=10`, inversion algorithm endpoint (`print_web_data_inv_v3`)
 
@@ -111,7 +117,7 @@ channels found in the data**:
 - Multi-product fetching with partial failure tolerance (failed products keep
   previous data) and automatic 30-day window widening when the 7-day payload
   is empty.
-- aiohttp client with identifiable User-Agent (`home-assistant-aeronet/0.4`),
+- aiohttp client with identifiable User-Agent (`home-assistant-aeronet/<manifest version>`),
   15s connect / 60s total timeout, 2 retries with exponential backoff +
   jitter and `Retry-After` honored on HTTP 429.
 - Config entry migration: v1→v2 adds products, v2→v3 introduces the
