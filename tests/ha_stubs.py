@@ -34,17 +34,21 @@ def install() -> None:
     if not hasattr(vol, "Schema"):
         class _Any:
             def __init__(self, *a, **k):
-                pass
+                # Record the schema key and default so tests can introspect
+                # the schema dict the flows build.
+                self.key = a[0] if a else None
+                self.default = k.get("default")
 
             def __call__(self, *a, **k):
-                return None
+                return a[0] if a else None
 
         vol.Schema = lambda *a, **k: a[0] if a and len(a) == 1 else None
-        vol.Optional = lambda *a, **k: _Any()
-        vol.Required = lambda *a, **k: _Any()
+        vol.Optional = lambda *a, **k: _Any(*a, **k)
+        vol.Required = lambda *a, **k: _Any(*a, **k)
         vol.In = lambda *a, **k: _Any()
         vol.All = lambda *a, **k: _Any()
         vol.Coerce = lambda *a, **k: _Any()
+        vol.Range = lambda *a, **k: _Any()
         vol.boolean = bool
         vol.string = str
 
@@ -60,7 +64,7 @@ def install() -> None:
         core.callback = lambda func: func
 
     def _flow_result(*a, **k):
-        return {"type": "done", "flow_id": "test", **k}
+        return {"flow_id": "test", **k}
 
     flow = _mod("homeassistant.data_entry_flow")
     if not hasattr(flow, "FlowResult"):
@@ -81,19 +85,19 @@ def install() -> None:
             hass = None
 
             async def async_set_unique_id(self, uid):
-                pass
+                self._unique_id = uid
 
             def _abort_if_unique_id_configured(self):
                 pass
 
             def async_create_entry(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="create_entry", **kw)
 
             def async_show_form(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="form", **kw)
 
             def async_abort(self, **kw):
-                return _flow_result(reason=kw.get("reason"), **kw)
+                return _flow_result(type="abort", **kw)
         ce.ConfigFlow = ConfigFlow
     if not hasattr(ce, "OptionsFlow"):
         class OptionsFlow:
@@ -101,13 +105,23 @@ def install() -> None:
                 pass
 
             def async_show_form(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="form", **kw)
 
             def async_create_entry(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="create_entry", **kw)
         ce.OptionsFlow = OptionsFlow
     if not hasattr(ce, "OptionsFlowWithConfigEntry"):
-        ce.OptionsFlowWithConfigEntry = ce.OptionsFlow
+        class OptionsFlowWithConfigEntry(OptionsFlow):
+            """HA 2024.11+ replacement for OptionsFlow.__init__(entry)."""
+
+            def __init__(self, config_entry=None):
+                super().__init__()
+                self._config_entry = config_entry
+
+            @property
+            def config_entry(self):
+                return self._config_entry
+        ce.OptionsFlowWithConfigEntry = OptionsFlowWithConfigEntry
 
     const = _mod("homeassistant.const")
     if not hasattr(const, "Platform"):
@@ -152,15 +166,35 @@ def install() -> None:
     stor = _mod("homeassistant.helpers.storage")
     if not hasattr(stor, "Store"):
         class Store:
+            """In-memory fake of the HA storage helper (shared payload dict)."""
+            data: dict = {}
+
             def __init__(self, hass, version, key, private=False):
                 self.key = key
 
             async def async_load(self):
-                return None
+                return Store.data.get(self.key)
 
             async def async_save(self, payload):
-                pass
+                Store.data[self.key] = payload
         stor.Store = Store
+
+    ir = _mod("homeassistant.helpers.issue_registry")
+    if not hasattr(ir, "async_create_issue"):
+        ir.IssueSeverity = types.SimpleNamespace(
+            WARNING="warning", ERROR="error")
+        # Recording registry: behavior tests assert on what the integration
+        # actually creates/deletes (v0.6.0, review M5).
+        ir.created_issues = {}
+
+        def async_create_issue(_hass, domain, issue_id, **kwargs):
+            ir.created_issues[(domain, issue_id)] = kwargs
+
+        def async_delete_issue(_hass, domain, issue_id):
+            ir.created_issues.pop((domain, issue_id), None)
+
+        ir.async_create_issue = async_create_issue
+        ir.async_delete_issue = async_delete_issue
 
     upd = _mod("homeassistant.helpers.update_coordinator")
     if not hasattr(upd, "DataUpdateCoordinator"):

@@ -114,14 +114,14 @@ class TestModuleMigrationHandler(unittest.TestCase):
         self.assertFalse(_run(migrate(hass, entry)))
         self.assertEqual(hass.updates, [])
 
-    def test_config_flow_handler_delegates_same_result(self):
-        # The ConfigFlow class keeps a complementary handler; both must agree.
-        from custom_components.aeronet.config_flow import AeronetConfigFlow
-        hass = FakeHass()
-        entry = FakeEntry(1, {const.CONF_SITE: "Valladolid"})
-        self.assertTrue(_run(AeronetConfigFlow.async_migrate_entry(hass, entry)))
-        self.assertEqual(entry.version, const.ENTRY_VERSION)
-        self.assertIn(const.CONF_PRODUCTS, entry.data)
+    def test_config_flow_does_not_shadow_the_module_handler(self):
+        """v0.6.0 (m3): the flow class no longer carries an (uncalled)
+        async_migrate_entry — only the module handler exists."""
+        from custom_components.aeronet import config_flow
+        self.assertFalse(
+            hasattr(config_flow.AeronetConfigFlow, "async_migrate_entry"),
+            "the flow class must not shadow the module migration handler",
+        )
 
     def test_config_flow_version_matches_module_constant(self):
         from custom_components.aeronet.config_flow import AeronetConfigFlow

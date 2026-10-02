@@ -5,22 +5,13 @@ import datetime as dt
 from typing import Any
 from urllib.parse import urlencode
 
-try:  # when imported as part of the custom_components.aeronet package
-    from .const import (
-        DATA_WINDOW_DAYS,
-        INVERSION_LEVELS,
-        INVERSION_WEB_SERVICE_URL,
-        LEVELS,
-        WEB_SERVICE_URL,
-    )
-except ImportError:  # flat import in stdlib-only unit tests
-    from const import (  # type: ignore
-        DATA_WINDOW_DAYS,
-        INVERSION_LEVELS,
-        INVERSION_WEB_SERVICE_URL,
-        LEVELS,
-        WEB_SERVICE_URL,
-    )
+from .const import (
+    DATA_WINDOW_DAYS,
+    INVERSION_LEVELS,
+    INVERSION_WEB_SERVICE_URL,
+    LEVELS,
+    WEB_SERVICE_URL,
+)
 
 
 def _window(now: dt.datetime, days: int = DATA_WINDOW_DAYS) -> tuple:
@@ -29,8 +20,7 @@ def _window(now: dt.datetime, days: int = DATA_WINDOW_DAYS) -> tuple:
 
 
 def _params(site: str, now: dt.datetime, data_type: str, avg: int,
-           email: str, endpoint: str,
-           days: int = DATA_WINDOW_DAYS) -> dict:
+           email: str, days: int = DATA_WINDOW_DAYS) -> dict:
     site = (site or "").strip()
     start, end = _window(now, days)
     params: dict[str, Any] = {
@@ -69,7 +59,7 @@ def build_data_url(
     """
     if level not in LEVELS:
         raise ValueError(f"unknown AERONET level: {level}")
-    params = _params(site, now, LEVELS[level], 10, email, WEB_SERVICE_URL, days)
+    params = _params(site, now, LEVELS[level], 10, email, days)
     return f"{WEB_SERVICE_URL}?{urlencode(params)}"
 
 
@@ -84,7 +74,7 @@ def build_daily_url(
     """
     if level not in LEVELS:
         raise ValueError(f"unknown AERONET level: {level}")
-    params = _params(site, now, LEVELS[level], 20, email, WEB_SERVICE_URL, days)
+    params = _params(site, now, LEVELS[level], 20, email, days)
     return f"{WEB_SERVICE_URL}?{urlencode(params)}"
 
 
@@ -98,7 +88,7 @@ def build_sda_url(
     ``AOD15=1&SDA15=1`` returns only AOD columns), so SDA is its own GET.
     """
     sda_type = {"1.0": "SDA10", "1.5": "SDA15", "2.0": "SDA20"}[level]
-    params = _params(site, now, sda_type, 10, email, WEB_SERVICE_URL, days)
+    params = _params(site, now, sda_type, 10, email, days)
     return f"{WEB_SERVICE_URL}?{urlencode(params)}"
 
 
@@ -121,8 +111,6 @@ def build_inversion_url(
     if product not in ("SSA", "VOL"):
         raise ValueError(f"unsupported inversion product: {product}")
     params = _params(
-        site, now, INVERSION_LEVELS[level], avg, email, INVERSION_WEB_SERVICE_URL,
-        days,
-    )
+        site, now, INVERSION_LEVELS[level], avg, email, days)
     params["product"] = product
     return f"{INVERSION_WEB_SERVICE_URL}?{urlencode(params)}"

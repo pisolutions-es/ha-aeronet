@@ -8,60 +8,38 @@ import random
 
 import aiohttp
 
-try:  # when imported as part of the custom_components.aeronet package
-    from .const import (
-        MAX_RETRIES,
-        REQUEST_TIMEOUT_CONNECT,
-        REQUEST_TIMEOUT_TOTAL,
-        RETRY_AFTER_MAX,
-        RETRY_BACKOFF,
-        SITE_LIST_URL,
-        DATA_WINDOW_DAYS,
-        USER_AGENT,
-    )
-    from .parsers import (
-        AOD_COLUMNS,
-        AOD_DAILY_SLOT,
-        AeronetError,
-        AeronetData,
-        SDA_COARSE_COLUMNS,
-        SDA_COARSE_SLOT,
-        SDA_FINE_COLUMNS,
-        SDA_FINE_SLOT,
-        SSA_COLUMNS,
-        SSA_SLOT,
-        VOL_COLUMNS,
-        VOL_SLOT,
-        parse_data_csv,
-        parse_site_list,
-    )
-except ImportError:  # flat import in stdlib-only unit tests
-    from const import (  # type: ignore
-        MAX_RETRIES,
-        REQUEST_TIMEOUT_CONNECT,
-        REQUEST_TIMEOUT_TOTAL,
-        RETRY_AFTER_MAX,
-        RETRY_BACKOFF,
-        SITE_LIST_URL,
-        DATA_WINDOW_DAYS,
-        USER_AGENT,
-    )
-    from parsers import (  # type: ignore
-        AOD_COLUMNS,
-        AOD_DAILY_SLOT,
-        AeronetError,
-        AeronetData,
-        SDA_COARSE_COLUMNS,
-        SDA_COARSE_SLOT,
-        SDA_FINE_COLUMNS,
-        SDA_FINE_SLOT,
-        SSA_COLUMNS,
-        SSA_SLOT,
-        VOL_COLUMNS,
-        VOL_SLOT,
-        parse_data_csv,
-        parse_site_list,
-    )
+from .parsers import (
+    AOD_COLUMNS,
+    AOD_DAILY_SLOT,
+    AeronetError,
+    AeronetData,
+    SDA_COARSE_COLUMNS,
+    SDA_COARSE_SLOT,
+    SDA_FINE_COLUMNS,
+    SDA_FINE_SLOT,
+    SSA_COLUMNS,
+    SSA_SLOT,
+    VOL_COLUMNS,
+    VOL_SLOT,
+    parse_data_csv,
+    parse_site_list,
+)
+from .urls import (
+    build_data_url,
+    build_daily_url,
+    build_inversion_url,
+    build_sda_url,
+)
+from .const import (
+    DATA_WINDOW_DAYS,
+    MAX_RETRIES,
+    REQUEST_TIMEOUT_CONNECT,
+    REQUEST_TIMEOUT_TOTAL,
+    RETRY_AFTER_MAX,
+    RETRY_BACKOFF,
+    SITE_LIST_URL,
+    USER_AGENT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -172,11 +150,6 @@ class AeronetClient:
         self, site: str, now: dt.datetime, *, days: int = DATA_WINDOW_DAYS
     ) -> AeronetData:
         """AOD all-points (AVG=10) for the window."""
-        try:
-            from .urls import build_data_url
-        except ImportError:  # flat import in stdlib-only unit tests
-            from urls import build_data_url  # type: ignore
-
         return await self._fetch_csv(
             build_data_url(site, now, level=self._level, email=self._email,
                            days=days),
@@ -189,11 +162,6 @@ class AeronetClient:
         self, site: str, now: dt.datetime, *, days: int = DATA_WINDOW_DAYS
     ) -> AeronetData:
         """AOD daily averages (AVG=20): one row per day incl. today's partial."""
-        try:
-            from .urls import build_daily_url
-        except ImportError:  # flat import in stdlib-only unit tests
-            from urls import build_daily_url  # type: ignore
-
         return await self._fetch_csv(
             build_daily_url(site, now, level=self._level, email=self._email,
                             days=days),
@@ -205,11 +173,6 @@ class AeronetClient:
         self, site: str, now: dt.datetime, *, days: int = DATA_WINDOW_DAYS
     ) -> AeronetData:
         """SDA fine/coarse AOD all-points (separate direct-sun request)."""
-        try:
-            from .urls import build_sda_url
-        except ImportError:  # flat import in stdlib-only unit tests
-            from urls import build_sda_url  # type: ignore
-
         return await self._fetch_csv(
             build_sda_url(site, now, level=self._level, email=self._email,
                           days=days),
@@ -226,11 +189,6 @@ class AeronetClient:
         days: int = DATA_WINDOW_DAYS,
     ) -> AeronetData:
         """SSA/VOL all-points from the inversion web service."""
-        try:
-            from .urls import build_inversion_url
-        except ImportError:  # flat import in stdlib-only unit tests
-            from urls import build_inversion_url  # type: ignore
-
         slot = SSA_SLOT if product == "SSA" else VOL_SLOT
         cols = SSA_COLUMNS if product == "SSA" else VOL_COLUMNS
         return await self._fetch_csv(

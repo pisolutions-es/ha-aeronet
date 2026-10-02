@@ -1,9 +1,11 @@
 """Tests for coordinator disk-cache persistence and 30-day widening.
 
 Home Assistant is not installed in the host test env, so minimal module
-stubs stand in; coordinators are constructed via __new__ (bypassing the
-DataUpdateCoordinator base __init__) and their update paths are driven
-directly with scripted fake clients.
+stubs stand in (tests/ha_stubs.py, the single shared stub set — v0.6.0
+review m2: the integration is imported as a package, the duplicate flat
+import blocks are gone); coordinators are constructed via __new__
+(bypassing the DataUpdateCoordinator base __init__) and their update
+paths are driven directly with scripted fake clients.
 """
 from __future__ import annotations
 
@@ -14,92 +16,17 @@ import sys
 import types
 import unittest
 
-
-# --- Home Assistant module stubs (installed before importing coordinators)
-def _install_stubs():
-    ha = types.ModuleType("homeassistant")
-    core = types.ModuleType("homeassistant.core")
-
-    class HomeAssistant:  # minimal
-        def async_create_task(self, coro):
-            coro.close()  # never scheduled in tests
-
-    core.HomeAssistant = HomeAssistant
-
-    helpers = types.ModuleType("homeassistant.helpers")
-    upd = types.ModuleType("homeassistant.helpers.update_coordinator")
-    # Mock issue_registry
-    issue_reg = types.ModuleType("homeassistant.helpers.issue_registry")
-    
-    class IssueSeverity:
-        WARNING = "warning"
-    
-    def async_create_issue(*args, **kwargs):
-        pass
-    
-    def async_delete_issue(*args, **kwargs):
-        pass
-    
-    issue_reg.IssueSeverity = IssueSeverity
-    issue_reg.async_create_issue = async_create_issue 
-    issue_reg.async_delete_issue = async_delete_issue
-
-    class DataUpdateCoordinator:
-        def __init__(self, hass, logger, name=None, update_interval=None):
-            self.hass = hass
-            self.data = None
-            self.update_interval = update_interval
-
-        async def async_refresh(self):
-            pass
-
-    class UpdateFailed(Exception):
-        pass
-
-    upd.DataUpdateCoordinator = DataUpdateCoordinator
-    upd.UpdateFailed = UpdateFailed
-
-    stor = types.ModuleType("homeassistant.helpers.storage")
-
-    class Store:
-        """In-memory fake of the HA storage helper."""
-        data: dict = {}
-
-        def __init__(self, hass, version, key, private=False):
-            self.key = key
-
-        async def async_load(self):
-            return Store.data.get(self.key)
-
-        async def async_save(self, payload):
-            Store.data[self.key] = payload
-
-    stor.Store = Store
-
-    aiohttp_mod = types.ModuleType("aiohttp")
-    aiohttp_mod.ClientError = Exception
-    aiohttp_mod.ClientSession = object
-    aiohttp_mod.ClientTimeout = lambda **kw: None
-
-    sys.modules.setdefault("aiohttp", aiohttp_mod)
-    sys.modules["homeassistant"] = ha
-    sys.modules["homeassistant.core"] = core
-    sys.modules["homeassistant.helpers"] = helpers
-    sys.modules["homeassistant.helpers.update_coordinator"] = upd
-    sys.modules["homeassistant.helpers.issue_registry"] = issue_reg
-    sys.modules["homeassistant.helpers.storage"] = stor
-
-
-_install_stubs()
-
 sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "aeronet"),
+    0, os.path.join(os.path.dirname(__file__), "..", "custom_components"),
 )
 
-import coordinators  # noqa: E402
-import parsers  # noqa: E402
-import site_cache  # noqa: E402
+from tests.ha_stubs import install as _install_ha_stubs  # noqa: E402
+
+_install_ha_stubs()
+
+from custom_components.aeronet import coordinators  # noqa: E402
+from custom_components.aeronet import parsers  # noqa: E402
+from custom_components.aeronet import site_cache  # noqa: E402
 from homeassistant.helpers.storage import Store  # noqa: E402
 
 URL = "https://example.test/list.txt"
@@ -148,8 +75,6 @@ class PayloadIsEmptyTests(unittest.TestCase):
 
 class SiteListStorageTests(unittest.TestCase):
     def setUp(self):
-        coordinators.reset_site_list_state() if hasattr(
-            coordinators, "reset_site_list_state") else None
         coordinators._sites_cache.clear()
         coordinators._sites_saved_at.clear()
         coordinators._sites_coordinators.clear()
@@ -356,22 +281,9 @@ class SiteListLifecycleTests(unittest.TestCase):
         self.assertIsNot(coord, dead)
 
 
-class FirstRefreshTests(unittest.TestCase):
-    """v0.5.0 F2: setup must use async_config_entry_first_refresh so a dead
-    first poll raises ConfigEntryNotReady and HA retries setup, instead of
-    setting up entities that stay unavailable until the next full interval."""
-
-    def test_setup_uses_first_refresh(self):
-        path = os.path.join(
-            os.path.dirname(__file__), "..", "custom_components",
-            "aeronet", "__init__.py")
-        with open(path, encoding="utf-8") as fh:
-            src = fh.read()
-        setup = src.split("async def async_unload_entry")[0]
-        self.assertIn(
-            "async_config_entry_first_refresh", setup,
-            "async_setup_entry must call async_config_entry_first_refresh "
-            "on the data coordinator (ConfigEntryNotReady semantics)")
+# v0.5.1: the source-grep FirstRefreshTests (asserting a string in
+# __init__.py) was removed — it passed even with the wrong call order.
+# Real setup/retry lifecycle behavior lives in tests/test_lifecycle.py.
 
 
 class OptionsListenerRefreshTests(unittest.TestCase):
@@ -414,7 +326,7 @@ class OptionsListenerRefreshTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def _snapshot(self):
-        from const import SITE_LIST_URL
+        from custom_components.aeronet.const import SITE_LIST_URL
         return {"email": "", "level": "1.5", "interval_min": 60,
                 "products": ["AOD"], "site_list_url": SITE_LIST_URL}
 
@@ -441,46 +353,103 @@ def _noop_coro():
     return _n()
 
 
-class RepairIssueTests(unittest.TestCase):
-    """v0.5.0 T5: AeronetDataCoordinator raises issues after consecutive failures."""
+class RepairIssueBehaviorTests(unittest.TestCase):
+    """v0.6.0 (review M5): the repair-issue path is asserted through the
+    REAL issue registry (recording stub), driven by actual failing polls —
+    not by poking internal counters.
 
-    def test_success_after_failure_clears_issue(self):
-        import types
-        from unittest.mock import MagicMock
-        
-        # Import directly, not via custom_components
-        import coordinators
-        
-        # Mock hass and session
-        hass = types.SimpleNamespace()
-        session = types.SimpleNamespace()
-        
-        coord = coordinators.AeronetDataCoordinator(
-            hass, session, email="test@example.com", level="1.5", 
-            interval_min=60, site="Madrid", entry_id="test123"
-        )
-        
-        # Simulate 3 failures (threshold), then success
-        coord._consecutive_failures = 2  # almost at threshold
-        coord._note_failure(Exception("Network timeout"))
-        self.assertEqual(coord._consecutive_failures, 3)
-        
-        coord._note_success()
-        self.assertEqual(coord._consecutive_failures, 0)
+    v0.5.0 T5 originally shipped counter-only assertions; these replace
+    them with registry-level behavior: a translated `api_failing` issue
+    appears after FAILURE_ISSUE_THRESHOLD consecutive failed polls and is
+    deleted by the next successful one.
+    """
+
+    ENTRY_ID = "E1"
+
+    def setUp(self):
+        from homeassistant.helpers import issue_registry as ir
+        ir.created_issues.clear()
+
+    def _coord(self, results):
+        """__new__-built coordinator wired to a scripted failing client."""
+        coord = coordinators.AeronetDataCoordinator.__new__(
+            coordinators.AeronetDataCoordinator)
+        coord._products = ["AOD"]
+        coord._email = ""
+        coord._level = "1.5"
+        coord.site = "Nowhere"
+        coord.data = None
+        coord._session = None
+        coord._entry_id = self.ENTRY_ID
+        coord._consecutive_failures = 0
+        coord.hass = types.SimpleNamespace()
+        orig = coordinators.AeronetClient
+        coordinators.AeronetClient = lambda *a, **k: FakeClient(results)
+        self.addCleanup(setattr, coordinators, "AeronetClient", orig)
+        return coord
+
+    def _poll(self, coord):
+        """One coordinator refresh; failures surface as UpdateFailed."""
+        try:
+            asyncio.run(coord._async_update_data())
+            return True
+        except coordinators.UpdateFailed:
+            return False
+
+    def test_three_failing_polls_create_a_translated_issue(self):
+        coord = self._coord({
+            ("data", 7): parsers.AeronetError("connection reset"),
+            ("daily", 7): parsers.AeronetError("connection reset"),
+        })
+        for _ in range(coordinators.AeronetDataCoordinator.
+                       FAILURE_ISSUE_THRESHOLD):
+            self.assertFalse(self._poll(coord))
+
+        from homeassistant.helpers import issue_registry as ir
+        issue = ir.created_issues.get(("aeronet", coord._issue_id))
+        self.assertIsNotNone(issue, "no repair issue after 3 failed polls")
+        self.assertEqual(issue["translation_key"], "api_failing")
+        self.assertEqual(issue["severity"], ir.IssueSeverity.WARNING)
+        self.assertFalse(issue["is_fixable"])
+        self.assertEqual(issue["translation_placeholders"]["site"], "Nowhere")
+        self.assertIn("connection reset",
+                      issue["translation_placeholders"]["error"])
+
+    def test_transient_failures_do_not_create_an_issue(self):
+        coord = self._coord({
+            ("data", 7): parsers.AeronetError("connection reset"),
+            ("daily", 7): parsers.AeronetError("connection reset"),
+        })
+        for _ in range(coordinators.AeronetDataCoordinator.
+                       FAILURE_ISSUE_THRESHOLD - 1):
+            self.assertFalse(self._poll(coord))
+        from homeassistant.helpers import issue_registry as ir
+        self.assertEqual(ir.created_issues, {})
+
+    def test_successful_poll_deletes_the_issue(self):
+        coord = self._coord({
+            ("data", 7): parsers.AeronetError("connection reset"),
+            ("daily", 7): parsers.AeronetError("connection reset"),
+        })
+        for _ in range(coordinators.AeronetDataCoordinator.
+                       FAILURE_ISSUE_THRESHOLD):
+            self.assertFalse(self._poll(coord))
+
+        # NASA comes back: the next poll succeeds and clears the issue.
+        coord._consecutive_failures = \
+            coordinators.AeronetDataCoordinator.FAILURE_ISSUE_THRESHOLD
+        coordinators.AeronetClient = \
+            lambda *a, **k: FakeClient({("data", 7): _data(True),
+                                        ("daily", 7): _data(True)})
+        self.assertTrue(self._poll(coord))
+
+        from homeassistant.helpers import issue_registry as ir
+        self.assertNotIn(("aeronet", coord._issue_id), ir.created_issues)
 
     def test_issue_id_from_entry_id(self):
-        import types
-        import coordinators
-        
-        hass = types.SimpleNamespace()
-        session = types.SimpleNamespace()
-        
-        coord = coordinators.AeronetDataCoordinator(
-            hass, session, email="", level="1.5", 
-            interval_min=60, site="Madrid", entry_id="entry456"
-        )
-        
-        self.assertEqual(coord._issue_id, "api_failing_entry456")
+        coord = self._coord({})
+        self.assertEqual(coord._issue_id,
+                         f"api_failing_{self.ENTRY_ID}")
 
 
 if __name__ == "__main__":

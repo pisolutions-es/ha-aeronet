@@ -30,10 +30,57 @@ from .const import (
     SITE_LIST_URL,
     SITE_LIST_URL_OPTIONS,
 )
-from .coordinators import get_sites_coordinator
-from .parsers import channel_label, dedupe_display_names, display_to_site_name
+from .coordinators import get_sites_coordinator, detected_channels
+from .parsers import (
+    _canonical_site,
+    channel_label,
+    dedupe_display_names,
+    display_to_site_name,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+# Sentinel option in the channels multi-select meaning "all channels
+# detected in the data". Empty string can never collide with a channel id;
+# it is normalized away on save (absent CONF_CHANNELS = all channels).
+ALL_CHANNELS = ""
+ALL_CHANNELS_LABEL = "All channels (default)"
+
+
+def _channels_default(cur: dict) -> list[str]:
+    """Selection the dialog opens with (v0.5.1, review M1).
+
+    An entry with no explicit CONF_CHANNELS used to be prefilled with every
+    channel detected in the current payload: saving untouched then FROZE the
+    set (a wavelength the station starts reporting later would never get an
+    entity) and tripped a reload + fetch burst. The sentinel keeps "absent =
+    all" intact instead.
+    """
+    explicit = list(cur.get(CONF_CHANNELS) or [])
+    return explicit or [ALL_CHANNELS]
+
+
+def _channels_options(hass, entry) -> list[dict]:
+    """Sentinel + channel ids currently fetched for this station."""
+    return [{"value": ALL_CHANNELS, "label": ALL_CHANNELS_LABEL}] + \
+        _channel_options(hass, entry)
+
+
+def _normalize_saved(user_input: dict) -> dict:
+    """Normalize saved options (v0.5.1, review M1).
+
+    The untouched-sentinel selection (and an empty selection) is dropped so
+    CONF_CHANNELS stays ABSENT: the update listener then compares [] against
+    the setup snapshot [] and no-op saves never refetch, while "all" keeps
+    tracking the channels the station reports over time.
+    """
+    saved = dict(user_input)
+    channels = [c for c in saved.get(CONF_CHANNELS) or [] if c != ALL_CHANNELS]
+    if not channels:
+        saved.pop(CONF_CHANNELS, None)
+    else:
+        saved[CONF_CHANNELS] = channels
+    return saved
 
 
 def _site_options(hass, url: str = SITE_LIST_URL) -> list[str] | None:
@@ -49,18 +96,42 @@ def _site_options(hass, url: str = SITE_LIST_URL) -> list[str] | None:
     return None
 
 
+def _unique_id_site(unique_id: str) -> str:
+    """Station name encoded in an entry unique_id ("aeronet_<site>")."""
+    prefix = "aeronet_"
+    return unique_id[len(prefix):] if unique_id.startswith(prefix) else ""
+
+
+def site_already_configured(hass, site: str) -> bool:
+    """True when an existing entry already targets this station.
+
+    v0.6.0 (review m6): AERONET station matching is case/underscore-
+    insensitive (_canonical_site), yet the config flow used to store the
+    raw cased name in the unique_id — `aeronet_Madrid` and `aeronet_MADRID`
+    could both be created and would poll the identical station in
+    parallel. Entries created before v0.6.0 keep their legacy cased
+    unique_id (no migration needed: this check compares canonically, so
+    the duplicate is still caught at flow time).
+    """
+    want = _canonical_site(site)
+    try:
+        entries = hass.config_entries.async_entries(DOMAIN)
+    except AttributeError:  # flow scaffolding without a config_entries
+        return False
+    return any(
+        bool(uid := getattr(entry, "unique_id", "") or "")
+        and _canonical_site(_unique_id_site(uid)) == want
+        for entry in entries
+    )
+
+
 class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = ENTRY_VERSION
 
-    @staticmethod
-    async def async_migrate_entry(hass, config_entry) -> bool:
-        """Complementary handler; HA core invokes the module-level one.
-
-        Kept as a thin delegation so both entry points stay consistent
-        (single implementation in __init__.async_migrate_entry).
-        """
-        from . import async_migrate_entry as _module_migrate
-        return await _module_migrate(hass, config_entry)
+    # v0.6.0 (review m3): the static ``async_migrate_entry`` delegation that
+    # used to live here is gone — HA core only ever invokes the module-level
+    # handler in __init__.py; a shadowing method on the flow class invited
+    # edits to a handler that is never called.
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -72,8 +143,12 @@ class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input = {**user_input, CONF_SITE: site}
             if not user_input.get(CONF_PRODUCTS):
                 user_input[CONF_PRODUCTS] = list(DEFAULT_PRODUCTS)
-            await self.async_set_unique_id(f"aeronet_{site}")
+            await self.async_set_unique_id(f"aeronet_{_canonical_site(site)}")
             self._abort_if_unique_id_configured()
+            # Legacy entries store the raw cased site in their unique_id;
+            # compare canonically so aeronet_Madrid blocks aeronet_MADRID.
+            if site_already_configured(self.hass, site):
+                return self.async_abort(reason="already_configured")
             return self.async_create_entry(title=f"AERONET · {site}", data=user_input)
 
         return self.async_show_form(
@@ -125,17 +200,18 @@ class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return AeronetOptionsFlow(config_entry)
 
 
-class AeronetOptionsFlow(config_entries.OptionsFlow):
-    """Tweak email/level/interval after setup (station changes via select)."""
+class AeronetOptionsFlow(config_entries.OptionsFlowWithConfigEntry):
+    """Tweak email/level/interval after setup (station changes via select).
 
-    def __init__(self, config_entry) -> None:
-        super().__init__()
-        self._entry = config_entry
+    v0.6.0 (review m7): OptionsFlowWithConfigEntry replaces the deprecated
+    ``OptionsFlow.__init__(config_entry)`` pattern (deprecated in HA
+    2024.11); the entry is available as ``self.config_entry``.
+    """
 
     async def async_step_init(self, user_input=None) -> FlowResult:
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-        cur = {**self._entry.data, **self._entry.options}
+            return self.async_create_entry(title="", data=_normalize_saved(user_input))
+        cur = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -160,13 +236,15 @@ class AeronetOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_CHANNELS,
-                        default=list(cur.get(CONF_CHANNELS)
-                                     or [o["value"] for o in
-                                         _channel_options(self.hass,
-                                                          self._entry)]),
+                        # v0.5.1 (M1): do NOT prefill every detected channel
+                        # when the entry has no explicit selection — that
+                        # froze the set on first save and broke the no-op
+                        # guarantee. The sentinel keeps "absent = all".
+                        default=_channels_default(cur),
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
-                            options=_channel_options(self.hass, self._entry),
+                            options=_channels_options(self.hass,
+                                                      self.config_entry),
                             multiple=True,
                             mode=selector.SelectSelectorMode.LIST,
                         )
@@ -198,10 +276,6 @@ def _channel_options(hass, entry) -> list[dict]:
     except Exception:  # pragma: no cover - defensive
         return []
     if data is None:
-        return []
-    try:
-        from .coordinators import detected_channels
-    except ImportError:  # pragma: no cover
         return []
     return [
         {"value": c, "label": channel_label(c)}

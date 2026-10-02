@@ -34,6 +34,20 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR, Platform.SELECT]
 
+# v0.5.1 (C1): entries currently holding the shared site-list coordinator,
+# keyed by entry_id. Kept outside hass.data so the "release exactly once"
+# guard survives even when the per-entry store is already gone (unload runs
+# its async_on_unload callbacks after async_unload_entry returns).
+_HELD_SITES: dict[str, str] = {}
+
+
+def _release_sites_hold(entry_id: str, url: str) -> None:
+    """Drop the entry's site-list hold exactly once (idempotent)."""
+    if _HELD_SITES.get(entry_id) != url:
+        return  # already released, or never held
+    del _HELD_SITES[entry_id]
+    release_sites_coordinator(url)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass)
@@ -47,8 +61,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     sites_coord = get_sites_coordinator(hass, session, url=sites_url)
     # v0.5.0: refcount so the shared site coordinator stops polling when the
     # last entry using it is unloaded (memory/timer leak otherwise).
-    hold_sites_coordinator(sites_url)
-    entry.async_on_unload(lambda: release_sites_coordinator(sites_url))
+    # v0.5.1 (C1): hold at most once per entry — a setup retry must not
+    # inflate the refcount, or unloading would leave the shared coordinator
+    # (and its weekly poll timer) alive forever.
+    remove_sites_unload = None
+    if entry.entry_id not in _HELD_SITES:
+        hold_sites_coordinator(sites_url)
+        _HELD_SITES[entry.entry_id] = sites_url
+        remove_sites_unload = entry.async_on_unload(
+            lambda: _release_sites_hold(entry.entry_id, sites_url)
+        )
     if sites_coord.data is None:
         await sites_coord.async_load_storage()
     if sites_coord.data is None:
@@ -86,19 +108,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         },
     }
 
+    # v0.5.1 (C1): first_refresh BEFORE forwarding platforms — HA's
+    # documented order. A failed first poll now raises ConfigEntryNotReady
+    # before any entity exists, instead of creating entities bound to a
+    # coordinator whose data is still None.
+    try:
+        await data_coord.async_config_entry_first_refresh()
+    except Exception:
+        # Leave no ghost behind: DataUpdateCoordinator reschedules itself in
+        # every path (success or failure), so a coordinator whose first
+        # refresh failed would keep polling NASA forever with zero
+        # listeners — one ghost poller per failed retry. Shut it down and
+        # release the site hold (and its unload hook) before re-raising, so
+        # HA's next setup attempt starts from a clean slate.
+        if remove_sites_unload is not None:
+            remove_sites_unload()
+        _release_sites_hold(entry.entry_id, sites_url)
+        await data_coord.async_shutdown()
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        raise
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-    # v0.5.0: first_refresh raises ConfigEntryNotReady when the very first
-    # poll fails, so HA retries setup instead of leaving entities
-    # unavailable until the next full poll interval.
-    await data_coord.async_config_entry_first_refresh()
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        # .get(): unload may run while setup never completed (entry sitting
+        # in HA's retry loop) — hass.data[DOMAIN] may not hold this entry.
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unload_ok
 
 

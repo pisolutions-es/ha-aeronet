@@ -22,6 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_CHANNELS,
     CONF_PRODUCTS,
+    CONF_SITE,
     DOMAIN,
     PRODUCT_AOD,
     PRODUCT_SDA,
@@ -40,8 +41,11 @@ from .parsers import (
     daily_series,
     latest_point,
     latest_value,
+    last_24h_mean_with_window,
     last_days_series,
     mean_last_24h,
+    points_recent,
+    points_today,
     recent_points,
     today_series,
     value_series,
@@ -204,21 +208,6 @@ def apply_series_budget(attrs: dict) -> dict:
     return attrs
 
 
-def _points_today(pts) -> list:
-    if not pts:
-        return []
-    ref = max(p.time for p in pts)
-    midnight = ref.replace(hour=0, minute=0, second=0, microsecond=0)
-    return [[p.time.isoformat(), p.aod] for p in pts if p.time >= midnight]
-
-
-def _points_recent(pts, hours: int = 24) -> list:
-    if not pts:
-        return []
-    cutoff = pts[-1].time - dt.timedelta(hours=hours)
-    return [[p.time.isoformat(), p.aod] for p in pts if p.time >= cutoff]
-
-
 def channels_latest(data, family: str) -> dict[str, float]:
     """{label: last valid value} for every channel of one product family.
 
@@ -297,11 +286,19 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coord)
         self.entity_description = description
         self._coord = coord
+        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        # v0.6.0 (review m4): the device name follows the *entry's stored
+        # station* — a select switch updates entry.data without reloading
+        # the entry, and a DeviceInfo frozen at construction kept
+        # advertising the previous station until the next restart.
+        return DeviceInfo(
             entry_type=DeviceEntryType.SERVICE,
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=f"AERONET · {coord.site}",
+            identifiers={(DOMAIN, self._entry.entry_id)},
+            name=f"AERONET · {self._entry.data.get(CONF_SITE, '')}",
             manufacturer="NASA AERONET",
             configuration_url="https://aeronet.gsfc.nasa.gov/",
         )
@@ -320,7 +317,7 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             p = latest_point(data)
             return round(p.aod, 4) if p else None
         if key == "aod_24h":
-            return mean_last_24h(data)
+            return last_24h_mean_with_window(data)[0]
         if key == "aod_daily":
             p = latest_value(data, "aod_daily", hours=26)
             return round(p.aod, 4) if p else None
@@ -367,6 +364,12 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             })
         if key == "aod_daily":
             return {"daily_series_7d": last_days_series(data, "aod_daily")}
+        if key == "aod_24h":
+            # v0.6.0 (review M4): make the staleness visible. A mean over
+            # "the last day with data" may be weeks old for campaign
+            # stations; the window attribute tells automations what the
+            # value actually covers.
+            return last_24h_mean_with_window(data)[1]
         if key in ("sda_fine", "sda_coarse"):
             slot = SDA_FINE_SLOT if key == "sda_fine" else SDA_COARSE_SLOT
             attrs = apply_series_budget({
@@ -428,10 +431,16 @@ class AeronetChannelSensor(CoordinatorEntity, SensorEntity):
         self._entry = entry
         self.channel = channel
         self._attr_unique_id = f"{entry.entry_id}_{channel}"
-        self._attr_device_info = DeviceInfo(
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        # v0.6.0 (review m4): same as AeronetSensor.device_info — follow the
+        # entry's stored station instead of the coordinator snapshot taken
+        # at entity creation.
+        return DeviceInfo(
             entry_type=DeviceEntryType.SERVICE,
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=f"AERONET · {coord.site}",
+            identifiers={(DOMAIN, self._entry.entry_id)},
+            name=f"AERONET · {self._entry.data.get(CONF_SITE, '')}",
             manufacturer="NASA AERONET",
             configuration_url="https://aeronet.gsfc.nasa.gov/",
         )
@@ -466,5 +475,5 @@ class AeronetChannelSensor(CoordinatorEntity, SensorEntity):
         if data is None:
             return None
         series = data.values.get(self.channel) or []
-        return channel_series_attrs(_points_today(series),
-                                    _points_recent(series))
+        return channel_series_attrs(points_today(series),
+                                    points_recent(series))
