@@ -188,6 +188,55 @@ class TestSsaVolColumns(unittest.TestCase):
             )
 
 
+class TestLast24hWindow(unittest.TestCase):
+    """v0.6.0 (review M4): the aod_24h mean must disclose what window it
+    was computed from instead of silently reporting weeks-old data."""
+
+    def _data(self, *points):
+        data = parsers.AeronetData(
+            meta=parsers.SiteMeta(name="X", latitude=1, longitude=2,
+                                  elevation=3))
+        data.points = list(points)
+        data.values = {"aod": list(data.points)}
+        return data
+
+    def _pt(self, day, hour, aod=0.2, month=10):
+        return parsers.AodPoint(
+            time=dt.datetime(2026, month, day, hour, tzinfo=dt.timezone.utc),
+            aod=aod, wavelength="AOD_500nm")
+
+    NOW = dt.datetime(2026, 10, 2, 12, 0, tzinfo=dt.timezone.utc)
+
+    def test_fresh_window(self):
+        mean, window = parsers.last_24h_mean_with_window(
+            self._data(self._pt(2, 6, 0.1), self._pt(2, 11, 0.3)), self.NOW)
+        self.assertEqual(mean, 0.2)
+        self.assertEqual(window["window"], "last_24h")
+        self.assertEqual(window["point_count"], 2)
+        self.assertNotIn("window_date", window)
+
+    def test_stale_fallback_discloses_last_day_with_data(self):
+        # Points are 20 days old: the mean covers that old day, not 24h.
+        data = self._data(self._pt(12, 9, 0.1, month=9),
+                          self._pt(12, 15, 0.3, month=9))
+        mean, window = parsers.last_24h_mean_with_window(data, self.NOW)
+        self.assertEqual(mean, 0.2)
+        self.assertEqual(window["window"], "last_day_with_data")
+        self.assertEqual(window["window_date"], "2026-09-12")
+        self.assertEqual(window["point_count"], 2)
+
+    def test_no_data_window(self):
+        mean, window = parsers.last_24h_mean_with_window(
+            self._data(), self.NOW)
+        self.assertIsNone(mean)
+        self.assertEqual(window, {"window": "no_data"})
+
+    def test_mean_last_24h_keeps_returning_the_mean(self):
+        data = self._data(self._pt(12, 9, 0.1, month=9),
+                          self._pt(12, 15, 0.3, month=9))
+        self.assertEqual(parsers.mean_last_24h(data, self.NOW), 0.2)
+
+
 class TestTodaySeries(unittest.TestCase):
     def test_today_series_covers_current_day(self):
         data = parsers.parse_data_csv(fixture("valladolid_aod_all.csv"))

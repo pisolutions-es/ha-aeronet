@@ -15,7 +15,7 @@ Adding the integration creates an "AERONET · <station>" device with:
 | `sensor.aeronet_<station>_aod` | AOD at latest valid point. Wavelength: **500 nm** (fallback 551/555/560 nm). Includes `today_series` attribute with today's complete time series from 00:00 UTC and `channels_latest` with the last value of every wavelength channel (see *Wavelength channels*). |
 | `sensor.aeronet_<station>_aod_<nm>nm` | One sensor per AOD wavelength channel (e.g. `aod_340nm` … `aod_1640nm`), created automatically for every wavelength the station actually reports. Excludes 500 nm (that is the main `aod` sensor). See *Wavelength channels*. |
 | `sensor.aeronet_<station>_ssa_<nm>nm` | One sensor per SSA wavelength channel (typically 440/675/870/1020 nm) when the SSA product is enabled; the preferred channel stays in `sensor.aeronet_<station>_ssa`. |
-| `sensor.aeronet_<station>_aod_24h_mean` | Mean AOD from the last 24 hours |
+| `sensor.aeronet_<station>_aod_24h_mean` | Mean AOD from the last 24 hours. Attributes always include `window`: `last_24h` when the mean is computed from points inside the last 24 h, `last_day_with_data` (+ `window_date`) when the station has not reported within 24 h — the value then covers that older day — or `no_data`. Automations that assume recency should check `window`. |
 | `sensor.aeronet_<station>_aod_daily` | Today's partial daily average (AERONET AVG=20). Includes `daily_series_7d` attribute with the last 7 daily averages. |
 | `sensor.aeronet_<station>_sda_fine` | SDA Fine Mode AOD at 500nm (Fine_Mode_AOD_500nm). Only present if SDA product is enabled. |
 | `sensor.aeronet_<station>_sda_coarse` | SDA Coarse Mode AOD at 500nm (Coarse_Mode_AOD_500nm). Includes `fine_mode_fraction` attribute. Only present if SDA product is enabled. |

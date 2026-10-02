@@ -142,5 +142,45 @@ class SensorStateTests(unittest.TestCase):
         self.assertEqual(ent.native_value, _point(30).time)
 
 
+class Aod24hWindowAttributeTests(unittest.TestCase):
+    """M4: the aod_24h sensor's attributes expose the window the mean
+    was computed from (fresh vs last_day_with_data)."""
+
+    def _sensor(self, points):
+        data = parsers.AeronetData(
+            meta=parsers.SiteMeta(name="X", latitude=1, longitude=2,
+                                  elevation=3))
+        data.points = list(points)
+        data.values = {"aod": list(data.points)}
+        coord = types.SimpleNamespace(
+            data=data, last_update_success=True, site="X")
+        desc = next(d for d in sensor_mod.SENSORS if d.key == "aod_24h")
+        return sensor_mod.AeronetSensor(coord, FakeEntry(data={"site": "X"}),
+                                        desc)
+
+    def test_fresh_points_report_last_24h_window(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        fresh = now - dt.timedelta(hours=2)
+        ent = self._sensor([
+            parsers.AodPoint(time=fresh, aod=0.2, wavelength="AOD_500nm")])
+        self.assertEqual(ent.extra_state_attributes,
+                         {"window": "last_24h", "point_count": 1})
+
+    def test_stale_points_report_the_day_they_come_from(self):
+        ent = self._sensor([
+            parsers.AodPoint(
+                time=dt.datetime(2026, 9, 10, 9, tzinfo=dt.timezone.utc),
+                aod=0.1, wavelength="AOD_500nm"),
+            parsers.AodPoint(
+                time=dt.datetime(2026, 9, 10, 15, tzinfo=dt.timezone.utc),
+                aod=0.3, wavelength="AOD_500nm"),
+        ])
+        attrs = ent.extra_state_attributes
+        self.assertEqual(attrs["window"], "last_day_with_data")
+        self.assertEqual(attrs["window_date"], "2026-09-10")
+        # The mean value itself is still the best available estimate.
+        self.assertEqual(ent.native_value, 0.2)
+
+
 if __name__ == "__main__":
     unittest.main()

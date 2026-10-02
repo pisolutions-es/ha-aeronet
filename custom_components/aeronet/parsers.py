@@ -505,17 +505,48 @@ def latest_point(data: AeronetData) -> AodPoint | None:
     return data.points[-1] if data.points else None
 
 
-def mean_last_24h(data: AeronetData, now: dt.datetime | None = None) -> float | None:
+def last_24h_mean_with_window(
+    data: AeronetData, now: dt.datetime | None = None
+) -> tuple[float | None, dict]:
+    """Mean AOD over the last 24 h, plus an honest description of the
+    window it was computed from (v0.6.0, review M4).
+
+    When no points fall inside the last 24 h (campaign or monthly-reporting
+    stations), the mean used to silently fall back to "the last calendar day
+    with data" — potentially weeks old — under a sensor named "AOD 24h
+    mean". The fallback mean is still returned (it is the best available
+    estimate), but ``window`` now says what it actually covers:
+
+        {"window": "last_24h"}                                        — fresh
+        {"window": "last_day_with_data", "window_date": "YYYY-MM-DD"} — stale
+        {"window": "no_data"}                                         (mean None)
+
+    Automations that assume recency can key on ``window``.
+    """
     now = now or dt.datetime.now(dt.timezone.utc)
     cutoff = now - dt.timedelta(hours=24)
     vals = [p.aod for p in data.points if p.time >= cutoff]
-    if not vals:
-        # Fall back to the last calendar day with data.
-        if not data.points:
-            return None
-        last_day = data.points[-1].time.date()
-        vals = [p.aod for p in data.points if p.time.date() == last_day]
-    return round(sum(vals) / len(vals), 4)
+    if vals:
+        return round(sum(vals) / len(vals), 4), {
+            "window": "last_24h", "point_count": len(vals)}
+    if not data.points:
+        return None, {"window": "no_data"}
+    # Fall back to the last calendar day with data — and say so.
+    last_day = data.points[-1].time.date()
+    vals = [p.aod for p in data.points if p.time.date() == last_day]
+    return round(sum(vals) / len(vals), 4), {
+        "window": "last_day_with_data", "window_date": last_day.isoformat(),
+        "point_count": len(vals),
+    }
+
+
+def mean_last_24h(data: AeronetData, now: dt.datetime | None = None) -> float | None:
+    """Mean AOD of the last 24 h (falling back to the last day with data).
+
+    See ``last_24h_mean_with_window`` for the window description exposed
+    on the aod_24h sensor's attributes.
+    """
+    return last_24h_mean_with_window(data, now)[0]
 
 
 def daily_series(data: AeronetData) -> dict[str, float]:

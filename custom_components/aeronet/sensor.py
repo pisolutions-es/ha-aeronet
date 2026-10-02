@@ -41,6 +41,7 @@ from .parsers import (
     daily_series,
     latest_point,
     latest_value,
+    last_24h_mean_with_window,
     last_days_series,
     mean_last_24h,
     points_recent,
@@ -316,7 +317,7 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             p = latest_point(data)
             return round(p.aod, 4) if p else None
         if key == "aod_24h":
-            return mean_last_24h(data)
+            return last_24h_mean_with_window(data)[0]
         if key == "aod_daily":
             p = latest_value(data, "aod_daily", hours=26)
             return round(p.aod, 4) if p else None
@@ -363,6 +364,12 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             })
         if key == "aod_daily":
             return {"daily_series_7d": last_days_series(data, "aod_daily")}
+        if key == "aod_24h":
+            # v0.6.0 (review M4): make the staleness visible. A mean over
+            # "the last day with data" may be weeks old for campaign
+            # stations; the window attribute tells automations what the
+            # value actually covers.
+            return last_24h_mean_with_window(data)[1]
         if key in ("sda_fine", "sda_coarse"):
             slot = SDA_FINE_SLOT if key == "sda_fine" else SDA_COARSE_SLOT
             attrs = apply_series_budget({
