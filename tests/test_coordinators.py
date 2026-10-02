@@ -356,22 +356,9 @@ class SiteListLifecycleTests(unittest.TestCase):
         self.assertIsNot(coord, dead)
 
 
-class FirstRefreshTests(unittest.TestCase):
-    """v0.5.0 F2: setup must use async_config_entry_first_refresh so a dead
-    first poll raises ConfigEntryNotReady and HA retries setup, instead of
-    setting up entities that stay unavailable until the next full interval."""
-
-    def test_setup_uses_first_refresh(self):
-        path = os.path.join(
-            os.path.dirname(__file__), "..", "custom_components",
-            "aeronet", "__init__.py")
-        with open(path, encoding="utf-8") as fh:
-            src = fh.read()
-        setup = src.split("async def async_unload_entry")[0]
-        self.assertIn(
-            "async_config_entry_first_refresh", setup,
-            "async_setup_entry must call async_config_entry_first_refresh "
-            "on the data coordinator (ConfigEntryNotReady semantics)")
+# v0.5.1: the source-grep FirstRefreshTests (asserting a string in
+# __init__.py) was removed — it passed even with the wrong call order.
+# Real setup/retry lifecycle behavior lives in tests/test_lifecycle.py.
 
 
 class OptionsListenerRefreshTests(unittest.TestCase):

@@ -1,6 +1,7 @@
 """DataUpdateCoordinator wrappers for AERONET site list + per-entry data."""
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from typing import Any
@@ -131,6 +132,9 @@ _sites_coordinators: dict[str, "SiteListCoordinator"] = {}
 # coordinator. Without it the module dict kept coordinators (and their
 # weekly poll timers) alive forever after every entry was unloaded.
 _sites_refs: dict[str, int] = {}
+# Strong references to fire-and-forget shutdown tasks, so they are not
+# garbage-collected before they run (and to keep the loop warnings away).
+_shutdown_tasks: set[asyncio.Task] = set()
 
 
 class SiteListCoordinator(DataUpdateCoordinator):
@@ -216,6 +220,34 @@ def hold_sites_coordinator(url: str) -> None:
     _sites_refs[url] = _sites_refs.get(url, 0) + 1
 
 
+def _shutdown_coordinator(coord) -> None:
+    """Shut a coordinator down for real.
+
+    DataUpdateCoordinator.async_shutdown() is a coroutine in HA: calling it
+    and discarding the result would leave the poll timer alive — the exact
+    ghost this refcount exists to kill. Coroutine shutdowns are scheduled on
+    the running loop (unload runs inside it); plain sync shutdowns (test
+    doubles) are invoked directly.
+    """
+    try:
+        result = coord.async_shutdown()
+    except Exception:  # pragma: no cover - defensive
+        _LOGGER.warning("AERONET site coordinator shutdown failed",
+                        exc_info=True)
+        return
+    if result is None or not asyncio.iscoroutine(result):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop: nothing can poll without one. Discard cleanly.
+        result.close()
+        return
+    task = loop.create_task(result)
+    _shutdown_tasks.add(task)
+    task.add_done_callback(_shutdown_tasks.discard)
+
+
 def release_sites_coordinator(url: str) -> None:
     """Drop one entry's reference; shut polling down when the last went away."""
     refs = _sites_refs.get(url, 0) - 1
@@ -225,11 +257,7 @@ def release_sites_coordinator(url: str) -> None:
     _sites_refs.pop(url, None)
     coord = _sites_coordinators.pop(url, None)
     if coord is not None:
-        try:
-            coord.async_shutdown()
-        except Exception:  # pragma: no cover - defensive
-            _LOGGER.warning("AERONET site coordinator shutdown failed",
-                            exc_info=True)
+        _shutdown_coordinator(coord)
 
 
 class AeronetDataCoordinator(DataUpdateCoordinator):
