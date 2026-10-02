@@ -58,7 +58,9 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_site"
         self._attr_current_option = data_coord.site
-        self._attr_name = "Station"
+        # v0.6.0 (review m3): no _attr_name — the strings' `site` translation
+        # key ("Station") must own the name; a literal here silently
+        # shadowed it (and its es.json entry).
         # In-flight station switch (v0.5.1, M2): a rapid re-selection
         # cancels the previous background fetch instead of stacking
         # duplicate request bursts.

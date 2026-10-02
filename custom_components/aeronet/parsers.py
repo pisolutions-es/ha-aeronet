@@ -463,8 +463,6 @@ def parse_data_csv(
                 except ValueError:
                     meta.last_date_processed = None
 
-    if series.get(primary_slot) is None:
-        series[primary_slot] = []
     if not any(series.values()) and meta.name == "":
         # Header present but zero usable rows: valid response, no data in window.
         meta.name = "unknown"
@@ -530,12 +528,7 @@ def daily_series(data: AeronetData) -> dict[str, float]:
 
 def recent_points(data: AeronetData, hours: int = 24) -> list[list[str | float]]:
     """[iso_time, aod] pairs of the last `hours` for graphing attributes."""
-    if not data.points:
-        return []
-    cutoff = data.points[-1].time - dt.timedelta(hours=hours)
-    return [
-        [p.time.isoformat(), p.aod] for p in data.points if p.time >= cutoff
-    ]
+    return points_recent(data.points, hours)
 
 
 def latest_value(
@@ -559,6 +552,23 @@ def value_series(
     return [[p.time.isoformat(), p.aod] for p in pts]
 
 
+def points_today(pts: list[AodPoint]) -> list[list[str | float]]:
+    """[iso_time, aod] pairs of the current UTC day, from a point list."""
+    if not pts:
+        return []
+    ref = max(p.time for p in pts)
+    midnight = ref.replace(hour=0, minute=0, second=0, microsecond=0)
+    return [[p.time.isoformat(), p.aod] for p in pts if p.time >= midnight]
+
+
+def points_recent(pts: list[AodPoint], hours: int = 24) -> list[list[str | float]]:
+    """[iso_time, aod] pairs of the last `hours` of a point list."""
+    if not pts:
+        return []
+    cutoff = pts[-1].time - dt.timedelta(hours=hours)
+    return [[p.time.isoformat(), p.aod] for p in pts if p.time >= cutoff]
+
+
 def today_series(
     data: AeronetData, now: dt.datetime | None = None
 ) -> list[list[str | float]]:
@@ -567,13 +577,7 @@ def today_series(
     Sourced from the all-points fetch, so it covers today's measurements
     since midnight regardless of how long the poll window is.
     """
-    if not data.points:
-        return []
-    ref = max(p.time for p in data.points)
-    midnight = ref.replace(hour=0, minute=0, second=0, microsecond=0)
-    return [
-        [p.time.isoformat(), p.aod] for p in data.points if p.time >= midnight
-    ]
+    return points_today(data.points)
 
 
 def last_days_series(

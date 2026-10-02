@@ -94,15 +94,10 @@ def _site_options(hass, url: str = SITE_LIST_URL) -> list[str] | None:
 class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = ENTRY_VERSION
 
-    @staticmethod
-    async def async_migrate_entry(hass, config_entry) -> bool:
-        """Complementary handler; HA core invokes the module-level one.
-
-        Kept as a thin delegation so both entry points stay consistent
-        (single implementation in __init__.async_migrate_entry).
-        """
-        from . import async_migrate_entry as _module_migrate
-        return await _module_migrate(hass, config_entry)
+    # v0.6.0 (review m3): the static ``async_migrate_entry`` delegation that
+    # used to live here is gone — HA core only ever invokes the module-level
+    # handler in __init__.py; a shadowing method on the flow class invited
+    # edits to a handler that is never called.
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

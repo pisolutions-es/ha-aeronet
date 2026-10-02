@@ -42,6 +42,8 @@ from .parsers import (
     latest_value,
     last_days_series,
     mean_last_24h,
+    points_recent,
+    points_today,
     recent_points,
     today_series,
     value_series,
@@ -202,21 +204,6 @@ def apply_series_budget(attrs: dict) -> dict:
         attrs.pop(key)
         attrs["series_limited"] = True
     return attrs
-
-
-def _points_today(pts) -> list:
-    if not pts:
-        return []
-    ref = max(p.time for p in pts)
-    midnight = ref.replace(hour=0, minute=0, second=0, microsecond=0)
-    return [[p.time.isoformat(), p.aod] for p in pts if p.time >= midnight]
-
-
-def _points_recent(pts, hours: int = 24) -> list:
-    if not pts:
-        return []
-    cutoff = pts[-1].time - dt.timedelta(hours=hours)
-    return [[p.time.isoformat(), p.aod] for p in pts if p.time >= cutoff]
 
 
 def channels_latest(data, family: str) -> dict[str, float]:
@@ -466,5 +453,5 @@ class AeronetChannelSensor(CoordinatorEntity, SensorEntity):
         if data is None:
             return None
         series = data.values.get(self.channel) or []
-        return channel_series_attrs(_points_today(series),
-                                    _points_recent(series))
+        return channel_series_attrs(points_today(series),
+                                    points_recent(series))
