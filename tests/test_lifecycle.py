@@ -387,6 +387,18 @@ class GhostCoordinatorTests(unittest.TestCase):
         self.assertIs(store["sites"], sites)
 
 
+class UnloadWithoutSetupTests(unittest.TestCase):
+    """v0.6.0 (review m5): unload may run for an entry whose setup never
+    reached the store setdefault (e.g. killed mid-retry) — it must not
+    raise KeyError/AttributeError on hass.data[DOMAIN]."""
+
+    def test_unload_entry_whose_setup_never_completed(self):
+        hass = FakeHass()  # hass.data == {}: nothing was ever stored
+        entry = FakeEntry(data=dict(ENTRY_DATA))
+        self.assertTrue(asyncio.run(aeronet.async_unload_entry(hass, entry)))
+        self.assertEqual(hass.data.get(const.DOMAIN, {}), {})
+
+
 class StationSwitchNonBlockingTests(unittest.TestCase):
     """v0.5.1 (M2): async_select_option must not block the service call on a
     full fetch (worst case ~13 min of timeouts/backoff/Retry-After)."""
