@@ -35,6 +35,48 @@ from .parsers import channel_label, dedupe_display_names, display_to_site_name
 
 _LOGGER = logging.getLogger(__name__)
 
+# Sentinel option in the channels multi-select meaning "all channels
+# detected in the data". Empty string can never collide with a channel id;
+# it is normalized away on save (absent CONF_CHANNELS = all channels).
+ALL_CHANNELS = ""
+ALL_CHANNELS_LABEL = "All channels (default)"
+
+
+def _channels_default(cur: dict) -> list[str]:
+    """Selection the dialog opens with (v0.5.1, review M1).
+
+    An entry with no explicit CONF_CHANNELS used to be prefilled with every
+    channel detected in the current payload: saving untouched then FROZE the
+    set (a wavelength the station starts reporting later would never get an
+    entity) and tripped a reload + fetch burst. The sentinel keeps "absent =
+    all" intact instead.
+    """
+    explicit = list(cur.get(CONF_CHANNELS) or [])
+    return explicit or [ALL_CHANNELS]
+
+
+def _channels_options(hass, entry) -> list[dict]:
+    """Sentinel + channel ids currently fetched for this station."""
+    return [{"value": ALL_CHANNELS, "label": ALL_CHANNELS_LABEL}] + \
+        _channel_options(hass, entry)
+
+
+def _normalize_saved(user_input: dict) -> dict:
+    """Normalize saved options (v0.5.1, review M1).
+
+    The untouched-sentinel selection (and an empty selection) is dropped so
+    CONF_CHANNELS stays ABSENT: the update listener then compares [] against
+    the setup snapshot [] and no-op saves never refetch, while "all" keeps
+    tracking the channels the station reports over time.
+    """
+    saved = dict(user_input)
+    channels = [c for c in saved.get(CONF_CHANNELS) or [] if c != ALL_CHANNELS]
+    if not channels:
+        saved.pop(CONF_CHANNELS, None)
+    else:
+        saved[CONF_CHANNELS] = channels
+    return saved
+
 
 def _site_options(hass, url: str = SITE_LIST_URL) -> list[str] | None:
     """Deduped station display names from the cache, or None if not loaded."""
@@ -134,7 +176,7 @@ class AeronetOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None) -> FlowResult:
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            return self.async_create_entry(title="", data=_normalize_saved(user_input))
         cur = {**self._entry.data, **self._entry.options}
         return self.async_show_form(
             step_id="init",
@@ -160,13 +202,14 @@ class AeronetOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_CHANNELS,
-                        default=list(cur.get(CONF_CHANNELS)
-                                     or [o["value"] for o in
-                                         _channel_options(self.hass,
-                                                          self._entry)]),
+                        # v0.5.1 (M1): do NOT prefill every detected channel
+                        # when the entry has no explicit selection — that
+                        # froze the set on first save and broke the no-op
+                        # guarantee. The sentinel keeps "absent = all".
+                        default=_channels_default(cur),
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
-                            options=_channel_options(self.hass, self._entry),
+                            options=_channels_options(self.hass, self._entry),
                             multiple=True,
                             mode=selector.SelectSelectorMode.LIST,
                         )

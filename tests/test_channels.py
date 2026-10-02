@@ -268,15 +268,130 @@ class TestChannelEntitySurface(unittest.TestCase):
         self.assertIn("daily_mean_aod", attrs)
 
 
-class TestChannelsOptionWiring(unittest.TestCase):
-    def test_conf_channels_constant(self):
-        from custom_components.aeronet import const
-        self.assertEqual(const.CONF_CHANNELS, "channels")
+class TestOptionsFlowChannelSemantics(unittest.TestCase):
+    """v0.5.1 (M1): the options flow must not freeze the channel set on the
+    first save nor turn an untouched save into a reload + fetch burst.
 
-    def test_options_flow_exposes_channels(self):
-        from custom_components.aeronet import config_flow  # noqa: F401
-        src = open(config_flow.__file__, encoding="utf-8").read()
-        self.assertIn("CONF_CHANNELS", src)
+    Real behavior: the dialog is opened (schema), the exact payload an
+    untouched dialog submits is saved, and the resulting options data is
+    asserted. No source grepping.
+    """
+
+    def _data_with_channels(self):
+        import datetime as dt
+        pt = parsers.AodPoint(
+            time=dt.datetime(2026, 9, 16, tzinfo=dt.timezone.utc),
+            aod=0.1, wavelength="AOD_500nm")
+        data = parsers.AeronetData(
+            meta=parsers.SiteMeta(name="Valladolid", latitude=1, longitude=2,
+                                  elevation=3))
+        data.values = {
+            "aod": [pt], "aod_340nm": [pt], "aod_440nm": [pt],
+            "aod_500nm": [pt],
+        }
+        return data
+
+    def _flow(self, data=None, options=None, coord_data=None):
+        from custom_components.aeronet import config_flow
+        entry = types.SimpleNamespace(
+            entry_id="E1", data=dict(data or {}), options=dict(options or {}))
+        flow = config_flow.AeronetOptionsFlow(entry)
+        # hass.data shaped like the integration store; coord_data=None means
+        # "no successful poll yet" (empty channel options).
+        flow.hass = types.SimpleNamespace(data={
+            "aeronet": {"E1": {"data": types.SimpleNamespace(data=coord_data)}}
+        } if coord_data is not None else {})
+        return flow
+
+    def _schema_fields(self, flow):
+        result = asyncio.run(flow.async_step_init(None))
+        fields = {f.key: f for f in result["data_schema"] if f.key}
+        return result, fields
+
+    def _untouched_submit(self, flow):
+        """Submit the dialog with every field left at its default."""
+        _, fields = self._schema_fields(flow)
+        user_input = {k: f.default for k, f in fields.items()}
+        return asyncio.run(flow.async_step_init(user_input))
+
+    def test_dialog_prefills_sentinel_not_detected_channels(self):
+        """An entry with no explicit channels must NOT open preselected with
+        every currently-detected channel (that froze the set on save). The
+        sentinel is offered first, detected channels stay selectable."""
+        flow = self._flow(coord_data=self._data_with_channels())
+        result, fields = self._schema_fields(flow)
+        ch_desc = fields["channels"]
+        self.assertEqual(ch_desc.default, [""])
+        selector = result["data_schema"][ch_desc]
+        options = [o["value"] for o in selector.config.options]
+        self.assertEqual(options[0], "")
+        self.assertIn("aod_340nm", options)
+        self.assertIn("aod_500nm", options)
+
+    def test_untouched_save_writes_no_channels(self):
+        """Saving the opened dialog without touching anything must keep
+        CONF_CHANNELS absent (absent = all detected, the shipped default)."""
+        flow = self._flow(coord_data=self._data_with_channels())
+        result = self._untouched_submit(flow)
+        self.assertEqual(result["type"], "done")
+        self.assertNotIn("channels", result["data"])
+
+    def test_no_poll_yet_untouched_save_writes_no_channels(self):
+        flow = self._flow()
+        result = self._untouched_submit(flow)
+        self.assertNotIn("channels", result["data"])
+
+    def test_explicit_selection_saved_unchanged_stays_explicit(self):
+        flow = self._flow(options={"channels": ["aod_340nm"]})
+        result = self._untouched_submit(flow)
+        self.assertEqual(result["data"]["channels"], ["aod_340nm"])
+
+    def test_sentinel_selection_normalizes_to_all(self):
+        from custom_components.aeronet import config_flow
+        # Selecting only the sentinel = back to "all channels".
+        saved = config_flow._normalize_saved({"channels": [""]})
+        self.assertNotIn("channels", saved)
+        # Mixed sentinel + explicit: sentinel dropped, explicit kept.
+        saved = config_flow._normalize_saved(
+            {"channels": ["", "aod_340nm"]})
+        self.assertEqual(saved["channels"], ["aod_340nm"])
+        # Empty selection = all channels.
+        saved = config_flow._normalize_saved({"channels": []})
+        self.assertNotIn("channels", saved)
+
+    def test_listener_noop_save_does_not_reload(self):
+        """End to end: an options payload exactly like the untouched dialog
+        produces must not reload the entry (no fetch burst)."""
+        import asyncio
+        from custom_components.aeronet import _async_update_listener
+        from custom_components.aeronet import const
+
+        calls = []
+
+        async def _noop():
+            return None
+
+        coord = types.SimpleNamespace(
+            configure=lambda **kw: calls.append("configure"),
+            async_refresh=lambda: calls.append("refresh") or _noop(),
+        )
+        snapshot = {
+            "email": "", "level": "1.5", "interval_min": 60,
+            "products": ["AOD"], "channels": [],
+            "site_list_url": const.SITE_LIST_URL,
+        }
+        hass = types.SimpleNamespace(
+            data={"aeronet": {"E1": {"data": coord, "config": snapshot}}},
+            config_entries=types.SimpleNamespace(
+                async_reload=lambda eid: calls.append("reload") or _noop()),
+        )
+        # Untouched-dialog payload: every scalar unchanged, channels absent.
+        entry = types.SimpleNamespace(entry_id="E1", data={
+            "email": "", "level": "1.5", "interval_min": 60,
+            "products": ["AOD"], "site": "Madrid",
+        }, options={})
+        asyncio.run(_async_update_listener(hass, entry))
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

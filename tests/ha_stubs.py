@@ -34,17 +34,21 @@ def install() -> None:
     if not hasattr(vol, "Schema"):
         class _Any:
             def __init__(self, *a, **k):
-                pass
+                # Record the schema key and default so tests can introspect
+                # the schema dict the flows build.
+                self.key = a[0] if a else None
+                self.default = k.get("default")
 
             def __call__(self, *a, **k):
-                return None
+                return a[0] if a else None
 
         vol.Schema = lambda *a, **k: a[0] if a and len(a) == 1 else None
-        vol.Optional = lambda *a, **k: _Any()
-        vol.Required = lambda *a, **k: _Any()
+        vol.Optional = lambda *a, **k: _Any(*a, **k)
+        vol.Required = lambda *a, **k: _Any(*a, **k)
         vol.In = lambda *a, **k: _Any()
         vol.All = lambda *a, **k: _Any()
         vol.Coerce = lambda *a, **k: _Any()
+        vol.Range = lambda *a, **k: _Any()
         vol.boolean = bool
         vol.string = str
 
