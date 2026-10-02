@@ -1,6 +1,7 @@
 """Select platform: AERONET station picker (~1675 options)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from homeassistant.components.select import SelectEntity
@@ -58,6 +59,10 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
         self._attr_unique_id = f"{entry.entry_id}_site"
         self._attr_current_option = data_coord.site
         self._attr_name = "Station"
+        # In-flight station switch (v0.5.1, M2): a rapid re-selection
+        # cancels the previous background fetch instead of stacking
+        # duplicate request bursts.
+        self._switch_task: asyncio.Task | None = None
         self._attr_device_info = DeviceInfo(
             entry_type=DeviceEntryType.SERVICE,
             identifiers={(DOMAIN, entry.entry_id)},
@@ -87,4 +92,14 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
         self.hass.config_entries.async_update_entry(
             self._entry, data={**self._entry.data, CONF_SITE: option}
         )
-        await self._data_coord.set_site(option)
+        # v0.5.1 (M2): set_site awaits a full fetch (REQUEST_TIMEOUT_TOTAL of
+        # 60 s x 3 attempts, plus backoff and Retry-After waits — worst case
+        # ~13 minutes). Blocking the select.select_option service call that
+        # long hangs the frontend and stacks duplicate bursts on re-clicks.
+        # Run the re-poll in the background instead; a newer switch cancels
+        # the previous in-flight one.
+        if self._switch_task is not None and not self._switch_task.done():
+            self._switch_task.cancel()
+        self._switch_task = self.hass.async_create_task(
+            self._data_coord.set_site(option)
+        )

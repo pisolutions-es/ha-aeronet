@@ -77,11 +77,10 @@ class FakeTask:
 
     def cancel(self):
         self.cancelled = True
-        if not self.coro.cr_await:
-            self.coro.close()
+        self.coro.close()
 
     def done(self):
-        return self.coro.cr_await is None and self.coro.cr_frame is None
+        return False
 
 
 class FakeConfigEntries:
@@ -95,6 +94,9 @@ class FakeConfigEntries:
 
     async def async_unload_platforms(self, entry, platforms):
         return True
+
+    def async_update_entry(self, entry, data=None, **kwargs):
+        entry.data = {**entry.data, **(data or {})}
 
 
 class FakeHass:
@@ -383,6 +385,60 @@ class GhostCoordinatorTests(unittest.TestCase):
         store = hass.data[const.DOMAIN][entry.entry_id]
         self.assertIs(store["data"], coord)
         self.assertIs(store["sites"], sites)
+
+
+class StationSwitchNonBlockingTests(unittest.TestCase):
+    """v0.5.1 (M2): async_select_option must not block the service call on a
+    full fetch (worst case ~13 min of timeouts/backoff/Retry-After)."""
+
+    def _entity(self):
+        import custom_components.aeronet.select as select_mod
+
+        class FakeDataCoord:
+            def __init__(self):
+                self.site = "Old"
+                self.executed = []
+
+            async def set_site(self, site):
+                self.site = site
+                self.executed.append(site)
+
+        entry = FakeEntry(data={"site": "Old"})
+        coord = FakeDataCoord()
+        sites = types.SimpleNamespace(data=[{"name": "Madrid"}])
+        ent = select_mod.AeronetSiteSelect(coord, sites, entry)
+        ent.hass = FakeHass()
+        return ent, coord
+
+    def _coro_name(self, task):
+        return task.coro.cr_code.co_name
+
+    def test_select_option_returns_without_awaiting_the_fetch(self):
+        ent, coord = self._entity()
+        asyncio.run(ent.async_select_option("Madrid"))
+        # The service call returned: set_site was handed to the loop as a
+        # background task, never awaited inline.
+        self.assertEqual(coord.executed, [])
+        self.assertEqual(len(ent.hass.created_tasks), 1)
+        task = ent.hass.created_tasks[0]
+        self.assertEqual(self._coro_name(task), "set_site")
+        # State + persistence happened synchronously, before the fetch.
+        self.assertEqual(ent._attr_current_option, "Madrid")
+        self.assertEqual(ent._entry.data["site"], "Madrid")
+        task.coro.close()  # not executed in the fake loop
+
+    def test_rapid_reswitch_cancels_previous_fetch(self):
+        ent, coord = self._entity()
+        asyncio.run(ent.async_select_option("Madrid"))
+        first = ent.hass.created_tasks[0]
+        asyncio.run(ent.async_select_option("Barajas"))
+        second = ent.hass.created_tasks[1]
+        self.assertTrue(first.cancelled, "previous switch must be cancelled")
+        self.assertFalse(second.cancelled)
+        self.assertEqual(ent._attr_current_option, "Barajas")
+        self.assertEqual(ent._entry.data["site"], "Barajas")
+        for t in (first, second):
+            t.coro.close()
 
 
 if __name__ == "__main__":
