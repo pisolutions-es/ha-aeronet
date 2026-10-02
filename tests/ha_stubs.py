@@ -183,8 +183,18 @@ def install() -> None:
     if not hasattr(ir, "async_create_issue"):
         ir.IssueSeverity = types.SimpleNamespace(
             WARNING="warning", ERROR="error")
-        ir.async_create_issue = lambda *a, **k: None
-        ir.async_delete_issue = lambda *a, **k: None
+        # Recording registry: behavior tests assert on what the integration
+        # actually creates/deletes (v0.6.0, review M5).
+        ir.created_issues = {}
+
+        def async_create_issue(_hass, domain, issue_id, **kwargs):
+            ir.created_issues[(domain, issue_id)] = kwargs
+
+        def async_delete_issue(_hass, domain, issue_id):
+            ir.created_issues.pop((domain, issue_id), None)
+
+        ir.async_create_issue = async_create_issue
+        ir.async_delete_issue = async_delete_issue
 
     upd = _mod("homeassistant.helpers.update_coordinator")
     if not hasattr(upd, "DataUpdateCoordinator"):

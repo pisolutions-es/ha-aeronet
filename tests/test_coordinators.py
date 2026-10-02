@@ -355,46 +355,103 @@ def _noop_coro():
     return _n()
 
 
-class RepairIssueTests(unittest.TestCase):
-    """v0.5.0 T5: AeronetDataCoordinator raises issues after consecutive failures."""
+class RepairIssueBehaviorTests(unittest.TestCase):
+    """v0.6.0 (review M5): the repair-issue path is asserted through the
+    REAL issue registry (recording stub), driven by actual failing polls —
+    not by poking internal counters.
 
-    def test_success_after_failure_clears_issue(self):
-        import types
-        from unittest.mock import MagicMock
-        
-        # Import directly, not via custom_components
-        from custom_components.aeronet import coordinators
-        
-        # Mock hass and session
-        hass = types.SimpleNamespace()
-        session = types.SimpleNamespace()
-        
-        coord = coordinators.AeronetDataCoordinator(
-            hass, session, email="test@example.com", level="1.5", 
-            interval_min=60, site="Madrid", entry_id="test123"
-        )
-        
-        # Simulate 3 failures (threshold), then success
-        coord._consecutive_failures = 2  # almost at threshold
-        coord._note_failure(Exception("Network timeout"))
-        self.assertEqual(coord._consecutive_failures, 3)
-        
-        coord._note_success()
-        self.assertEqual(coord._consecutive_failures, 0)
+    v0.5.0 T5 originally shipped counter-only assertions; these replace
+    them with registry-level behavior: a translated `api_failing` issue
+    appears after FAILURE_ISSUE_THRESHOLD consecutive failed polls and is
+    deleted by the next successful one.
+    """
+
+    ENTRY_ID = "E1"
+
+    def setUp(self):
+        from homeassistant.helpers import issue_registry as ir
+        ir.created_issues.clear()
+
+    def _coord(self, results):
+        """__new__-built coordinator wired to a scripted failing client."""
+        coord = coordinators.AeronetDataCoordinator.__new__(
+            coordinators.AeronetDataCoordinator)
+        coord._products = ["AOD"]
+        coord._email = ""
+        coord._level = "1.5"
+        coord.site = "Nowhere"
+        coord.data = None
+        coord._session = None
+        coord._entry_id = self.ENTRY_ID
+        coord._consecutive_failures = 0
+        coord.hass = types.SimpleNamespace()
+        orig = coordinators.AeronetClient
+        coordinators.AeronetClient = lambda *a, **k: FakeClient(results)
+        self.addCleanup(setattr, coordinators, "AeronetClient", orig)
+        return coord
+
+    def _poll(self, coord):
+        """One coordinator refresh; failures surface as UpdateFailed."""
+        try:
+            asyncio.run(coord._async_update_data())
+            return True
+        except coordinators.UpdateFailed:
+            return False
+
+    def test_three_failing_polls_create_a_translated_issue(self):
+        coord = self._coord({
+            ("data", 7): parsers.AeronetError("connection reset"),
+            ("daily", 7): parsers.AeronetError("connection reset"),
+        })
+        for _ in range(coordinators.AeronetDataCoordinator.
+                       FAILURE_ISSUE_THRESHOLD):
+            self.assertFalse(self._poll(coord))
+
+        from homeassistant.helpers import issue_registry as ir
+        issue = ir.created_issues.get(("aeronet", coord._issue_id))
+        self.assertIsNotNone(issue, "no repair issue after 3 failed polls")
+        self.assertEqual(issue["translation_key"], "api_failing")
+        self.assertEqual(issue["severity"], ir.IssueSeverity.WARNING)
+        self.assertFalse(issue["is_fixable"])
+        self.assertEqual(issue["translation_placeholders"]["site"], "Nowhere")
+        self.assertIn("connection reset",
+                      issue["translation_placeholders"]["error"])
+
+    def test_transient_failures_do_not_create_an_issue(self):
+        coord = self._coord({
+            ("data", 7): parsers.AeronetError("connection reset"),
+            ("daily", 7): parsers.AeronetError("connection reset"),
+        })
+        for _ in range(coordinators.AeronetDataCoordinator.
+                       FAILURE_ISSUE_THRESHOLD - 1):
+            self.assertFalse(self._poll(coord))
+        from homeassistant.helpers import issue_registry as ir
+        self.assertEqual(ir.created_issues, {})
+
+    def test_successful_poll_deletes_the_issue(self):
+        coord = self._coord({
+            ("data", 7): parsers.AeronetError("connection reset"),
+            ("daily", 7): parsers.AeronetError("connection reset"),
+        })
+        for _ in range(coordinators.AeronetDataCoordinator.
+                       FAILURE_ISSUE_THRESHOLD):
+            self.assertFalse(self._poll(coord))
+
+        # NASA comes back: the next poll succeeds and clears the issue.
+        coord._consecutive_failures = \
+            coordinators.AeronetDataCoordinator.FAILURE_ISSUE_THRESHOLD
+        coordinators.AeronetClient = \
+            lambda *a, **k: FakeClient({("data", 7): _data(True),
+                                        ("daily", 7): _data(True)})
+        self.assertTrue(self._poll(coord))
+
+        from homeassistant.helpers import issue_registry as ir
+        self.assertNotIn(("aeronet", coord._issue_id), ir.created_issues)
 
     def test_issue_id_from_entry_id(self):
-        import types
-        from custom_components.aeronet import coordinators
-        
-        hass = types.SimpleNamespace()
-        session = types.SimpleNamespace()
-        
-        coord = coordinators.AeronetDataCoordinator(
-            hass, session, email="", level="1.5", 
-            interval_min=60, site="Madrid", entry_id="entry456"
-        )
-        
-        self.assertEqual(coord._issue_id, "api_failing_entry456")
+        coord = self._coord({})
+        self.assertEqual(coord._issue_id,
+                         f"api_failing_{self.ENTRY_ID}")
 
 
 if __name__ == "__main__":
