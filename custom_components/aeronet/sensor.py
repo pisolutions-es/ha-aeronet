@@ -22,6 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_CHANNELS,
     CONF_PRODUCTS,
+    CONF_SITE,
     DOMAIN,
     PRODUCT_AOD,
     PRODUCT_SDA,
@@ -284,11 +285,19 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coord)
         self.entity_description = description
         self._coord = coord
+        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        # v0.6.0 (review m4): the device name follows the *entry's stored
+        # station* — a select switch updates entry.data without reloading
+        # the entry, and a DeviceInfo frozen at construction kept
+        # advertising the previous station until the next restart.
+        return DeviceInfo(
             entry_type=DeviceEntryType.SERVICE,
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=f"AERONET · {coord.site}",
+            identifiers={(DOMAIN, self._entry.entry_id)},
+            name=f"AERONET · {self._entry.data.get(CONF_SITE, '')}",
             manufacturer="NASA AERONET",
             configuration_url="https://aeronet.gsfc.nasa.gov/",
         )
@@ -415,10 +424,16 @@ class AeronetChannelSensor(CoordinatorEntity, SensorEntity):
         self._entry = entry
         self.channel = channel
         self._attr_unique_id = f"{entry.entry_id}_{channel}"
-        self._attr_device_info = DeviceInfo(
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        # v0.6.0 (review m4): same as AeronetSensor.device_info — follow the
+        # entry's stored station instead of the coordinator snapshot taken
+        # at entity creation.
+        return DeviceInfo(
             entry_type=DeviceEntryType.SERVICE,
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=f"AERONET · {coord.site}",
+            identifiers={(DOMAIN, self._entry.entry_id)},
+            name=f"AERONET · {self._entry.data.get(CONF_SITE, '')}",
             manufacturer="NASA AERONET",
             configuration_url="https://aeronet.gsfc.nasa.gov/",
         )
