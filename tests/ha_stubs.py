@@ -64,7 +64,7 @@ def install() -> None:
         core.callback = lambda func: func
 
     def _flow_result(*a, **k):
-        return {"type": "done", "flow_id": "test", **k}
+        return {"flow_id": "test", **k}
 
     flow = _mod("homeassistant.data_entry_flow")
     if not hasattr(flow, "FlowResult"):
@@ -85,19 +85,19 @@ def install() -> None:
             hass = None
 
             async def async_set_unique_id(self, uid):
-                pass
+                self._unique_id = uid
 
             def _abort_if_unique_id_configured(self):
                 pass
 
             def async_create_entry(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="create_entry", **kw)
 
             def async_show_form(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="form", **kw)
 
             def async_abort(self, **kw):
-                return _flow_result(reason=kw.get("reason"), **kw)
+                return _flow_result(type="abort", **kw)
         ce.ConfigFlow = ConfigFlow
     if not hasattr(ce, "OptionsFlow"):
         class OptionsFlow:
@@ -105,10 +105,10 @@ def install() -> None:
                 pass
 
             def async_show_form(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="form", **kw)
 
             def async_create_entry(self, **kw):
-                return _flow_result(**kw)
+                return _flow_result(type="create_entry", **kw)
         ce.OptionsFlow = OptionsFlow
     if not hasattr(ce, "OptionsFlowWithConfigEntry"):
         ce.OptionsFlowWithConfigEntry = ce.OptionsFlow

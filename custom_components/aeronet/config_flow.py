@@ -31,7 +31,12 @@ from .const import (
     SITE_LIST_URL_OPTIONS,
 )
 from .coordinators import get_sites_coordinator, detected_channels
-from .parsers import channel_label, dedupe_display_names, display_to_site_name
+from .parsers import (
+    _canonical_site,
+    channel_label,
+    dedupe_display_names,
+    display_to_site_name,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -91,6 +96,35 @@ def _site_options(hass, url: str = SITE_LIST_URL) -> list[str] | None:
     return None
 
 
+def _unique_id_site(unique_id: str) -> str:
+    """Station name encoded in an entry unique_id ("aeronet_<site>")."""
+    prefix = "aeronet_"
+    return unique_id[len(prefix):] if unique_id.startswith(prefix) else ""
+
+
+def site_already_configured(hass, site: str) -> bool:
+    """True when an existing entry already targets this station.
+
+    v0.6.0 (review m6): AERONET station matching is case/underscore-
+    insensitive (_canonical_site), yet the config flow used to store the
+    raw cased name in the unique_id — `aeronet_Madrid` and `aeronet_MADRID`
+    could both be created and would poll the identical station in
+    parallel. Entries created before v0.6.0 keep their legacy cased
+    unique_id (no migration needed: this check compares canonically, so
+    the duplicate is still caught at flow time).
+    """
+    want = _canonical_site(site)
+    try:
+        entries = hass.config_entries.async_entries(DOMAIN)
+    except AttributeError:  # flow scaffolding without a config_entries
+        return False
+    return any(
+        bool(uid := getattr(entry, "unique_id", "") or "")
+        and _canonical_site(_unique_id_site(uid)) == want
+        for entry in entries
+    )
+
+
 class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = ENTRY_VERSION
 
@@ -109,8 +143,12 @@ class AeronetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input = {**user_input, CONF_SITE: site}
             if not user_input.get(CONF_PRODUCTS):
                 user_input[CONF_PRODUCTS] = list(DEFAULT_PRODUCTS)
-            await self.async_set_unique_id(f"aeronet_{site}")
+            await self.async_set_unique_id(f"aeronet_{_canonical_site(site)}")
             self._abort_if_unique_id_configured()
+            # Legacy entries store the raw cased site in their unique_id;
+            # compare canonically so aeronet_Madrid blocks aeronet_MADRID.
+            if site_already_configured(self.hass, site):
+                return self.async_abort(reason="already_configured")
             return self.async_create_entry(title=f"AERONET · {site}", data=user_input)
 
         return self.async_show_form(

@@ -328,7 +328,7 @@ class TestOptionsFlowChannelSemantics(unittest.TestCase):
         CONF_CHANNELS absent (absent = all detected, the shipped default)."""
         flow = self._flow(coord_data=self._data_with_channels())
         result = self._untouched_submit(flow)
-        self.assertEqual(result["type"], "done")
+        self.assertEqual(result["type"], "create_entry")
         self.assertNotIn("channels", result["data"])
 
     def test_no_poll_yet_untouched_save_writes_no_channels(self):
