@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 odd/
+run_*.log
