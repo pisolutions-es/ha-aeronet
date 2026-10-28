@@ -104,6 +104,10 @@ REQUEST_TIMEOUT_TOTAL = 60
 REQUEST_TIMEOUT_CONNECT = 15
 MAX_RETRIES = 2
 RETRY_BACKOFF = 5
+# v0.7.0 (review M1): hard cap on a response body. A malformed request can
+# make the web service answer with every station's rows; the parser rejects
+# it, but only after the whole body was already read into memory.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 # Upper bound for a 429 Retry-After wait (seconds); larger values are clamped
 # so a poll cycle never stalls on a bogus server value.
 RETRY_AFTER_MAX = 300

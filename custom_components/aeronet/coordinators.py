@@ -243,6 +243,7 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
         site: str,
         products: list[str] | None = None,
         entry_id: str = "",
+        config_entry=None,
     ) -> None:
         self._session = session
         self._email = email
@@ -256,6 +257,11 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name=f"{DOMAIN}_{site}",
             update_interval=dt.timedelta(minutes=interval_min),
+            # v0.7.0 (review M3): hand the coordinator its config entry so
+            # HA's own lifecycle bookkeeping (async_config_entry_first_refresh,
+            # shutdown, listener cleanup) works on a coordinator it can
+            # identify, instead of relying on the implicit context variable.
+            config_entry=config_entry,
         )
 
     @property
@@ -317,7 +323,17 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
     async def _fetch_all(self, client: AeronetClient, site: str,
                         now: dt.datetime, days: int,
                         errors: list[str]) -> AeronetData | None:
-        """One pass over the configured products at the given window width."""
+        """One pass over the configured products at the given window width.
+
+        v0.7.0 (review C1): SDA used to be fetched *only* as a fallback when
+        the AOD fetch failed, so enabling both products silently never
+        requested SDA and the sda_fine/sda_coarse sensors stayed empty
+        forever. Every enabled product is now fetched.
+
+        v0.7.0 (review L2): the requests run concurrently instead of
+        serially, so a 4-product configuration no longer multiplies the
+        worst-case poll latency by the number of products.
+        """
 
         async def _try(label, coro):
             try:
@@ -327,20 +343,32 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("AERONET product %s fetch failed: %s", label, err)
                 return None
 
-        # Base payload: whichever all-points fetch runs first provides meta.
-        base: AeronetData | None = None
         products = self._products or DEFAULT_PRODUCTS
+        jobs: list[tuple[str, Any]] = []
         if PRODUCT_AOD in products:
-            base = await _try("AOD", client.fetch_data(site, now, days=days))
-        if base is None and PRODUCT_SDA in products:
-            base = await _try("SDA", client.fetch_sda(site, now, days=days))
+            jobs.append(("AOD", client.fetch_data(site, now, days=days)))
+        if PRODUCT_SDA in products:
+            jobs.append(("SDA", client.fetch_sda(site, now, days=days)))
         for product in products:
-            if product not in PRODUCTS_INVERSION:
-                continue
-            inv = await _try(
-                product, client.fetch_inversion(product, site, now, days=days))
-            if inv is not None:
-                base = _merge(base, inv)
+            if product in PRODUCTS_INVERSION:
+                jobs.append((product,
+                             client.fetch_inversion(product, site, now,
+                                                    days=days)))
+        if not jobs:
+            return None
+
+        results = await asyncio.gather(
+            *(_try(label, coro) for label, coro in jobs)
+        )
+        fetched = dict(zip((label for label, _ in jobs), results))
+
+        # Merge deterministically: AOD first (its all-points payload owns
+        # ``points`` and the site metadata), then SDA, then the inversions.
+        base: AeronetData | None = None
+        for label in ("AOD", "SDA") + tuple(PRODUCTS_INVERSION):
+            payload = fetched.get(label)
+            if payload is not None:
+                base = _merge(base, payload)
         return base
 
     async def _async_update_data(self):
@@ -353,8 +381,10 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
         errors: list[str] = []
 
         try:
-            base = await self._fetch_all(client, site, now, DATA_WINDOW_DAYS,
-                                         errors)
+            # v0.7.0 (review M2): remember the window width that actually
+            # produced data, so the daily-average fetch widens with it.
+            days_used = DATA_WINDOW_DAYS
+            base = await self._fetch_all(client, site, now, days_used, errors)
 
             # Some stations report only campaign/monthly data and answer the 7-day
             # window with an empty payload: widen once to DATA_WINDOW_WIDE_DAYS
@@ -371,6 +401,7 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
                 if widened is not None and not payload_is_empty(widened):
                     base = widened
                     errors = wide_errors
+                    days_used = DATA_WINDOW_WIDE_DAYS
 
             if base is None:
                 if errors:
@@ -382,7 +413,8 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
             if PRODUCT_AOD in products:
                 async def _try_daily():
                     try:
-                        return await client.fetch_daily(site, now)
+                        return await client.fetch_daily(site, now,
+                                                        days=days_used)
                     except AeronetError as err:
                         errors.append(f"AOD daily: {err}")
                         _LOGGER.warning("AERONET AOD daily fetch failed: %s", err)
@@ -391,19 +423,25 @@ class AeronetDataCoordinator(DataUpdateCoordinator):
                 if daily is not None:
                     base.values.update(daily.values)
                     base.meta.extras.update(daily.meta.extras)
-                elif (
-                    self.data is not None
-                    and getattr(self.data, "values", None)
-                    and normalize_site(self.data.meta.name) in (
-                        "", normalize_site(site)
-                    )
-                ):
-                    # Daily fetch failed: keep the previous daily series when it
-                    # still belongs to this site (set_site clears self.data).
-                    base.values.update(
-                        {k: v for k, v in self.data.values.items()
-                         if k not in base.values}
-                    )
+
+            # v0.7.0 (review M2): any product slot missing from this poll
+            # (daily averages OR a transient SDA/SSA/VOL failure) keeps the
+            # previous value instead of dropping to unavailable — matching
+            # what the README documents. set_site() clears self.data, so a
+            # previous station's data can never leak into a new one.
+            if (
+                errors
+                and self.data is not None
+                and getattr(self.data, "values", None)
+                and normalize_site(self.data.meta.name) in (
+                    "", normalize_site(site)
+                )
+            ):
+                previous = getattr(self.data, "values", None) or {}
+                base.values.update(
+                    {k: v for k, v in previous.items()
+                     if not base.values.get(k)}
+                )
 
             if errors:
                 _LOGGER.info("AERONET partial update for '%s': %s", site, "; ".join(errors))

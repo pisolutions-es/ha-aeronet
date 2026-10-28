@@ -3,6 +3,104 @@
 All notable changes to this project are documented here.
 Releases before v0.5.0 are described in the [GitHub releases](https://github.com/pisolutions-es/ha-aeronet/releases).
 
+## [0.7.0] - 2026-10-28
+
+Audit of the whole integration (read-only review) plus the first-class
+visualization deliverable. Entity ids, unique_ids and the published state
+format are unchanged; no migration is needed and `requirements` stays
+empty.
+
+### Added
+
+- **`dashboards/aeronet.yaml`**: a ready-to-use Lovelace dashboard for the
+  example station Valladolid — header with live values, station picker and
+  metadata, two native `statistics-graph` cards (7-day hourly statistics of
+  the main AOD and of every wavelength channel), two native `history-graph`
+  cards (24 h) and two optional `custom:apexcharts-card` cards for the
+  AOD(λ) spectrum and the 24 h intraday series. Every card is commented
+  with the attribute that feeds it, how to substitute the station and what
+  to delete without HACS.
+- **`spectrum` attribute** on the main `aod` (and `ssa`) sensor: the
+  wavelength-ordered, numeric `[[nm, value], ...]` form of the spectrum, so
+  a chart does not have to parse `channels_latest` labels.
+- **`angstrom_440_870` attribute**: the Ångström exponent α(440–870 nm)
+  derived from the two channels (`-ln(τ₄₄₀/τ₈₇₀)/ln(440/870)`), `null`
+  when either channel is missing or non-positive. Documented as a derived
+  quantity, not a NASA product.
+- **`tests_ha/`**: a pytest-homeassistant-custom-component suite (17 tests)
+  running the integration inside real Home Assistant 2026.10.4 — setup,
+  statistics eligibility, channel entities, select options, unload, stable
+  entity ids, both flows and the shipped dashboard.
+- **README "Visualización" section** and updated test counts.
+
+### Changed
+
+- **Series attributes are decimated, not dropped (M5).** The largest raw
+  series is halved repeatedly (down to 32 points) until the payload fits
+  the 14 KiB budget, so a dense station still renders a curve;
+  `series_limited: true` marks any trim. Compact aggregates are untouched.
+- **Concurrent product fetches (L2)**: all enabled products are requested
+  in parallel instead of one after another.
+- **Cached option list and 24 h mean (L4)**: the station dropdown and the
+  `aod_24h` window are computed once per payload instead of on every state
+  write.
+- **`entry.runtime_data`** is populated alongside `hass.data` (L3).
+
+### Fixed
+
+- **SDA was never fetched when AOD was enabled (C1).** SDA used to be a
+  fallback used only when the AOD request failed, so enabling AOD+SDA left
+  `sda_fine`/`sda_coarse` empty forever. Every enabled product is now
+  fetched on every poll.
+- **All-`-999` preferred column emptied the main sensor (C2).** When a
+  station reports `AOD_500nm` as `-999` on every row while another
+  wavelength carries data, the first populated candidate is promoted and
+  marked as the family's main channel (no duplicate channel entity).
+- **Missing English translation for the repair issue (H1)**:
+  `translations/en.json` lacked `issues.api_failing`, so English users saw
+  the raw translation key. A parity test now guards `strings.json`
+  against both translation files.
+- **Options snapshot never refreshed (H2).** After `configure()`, the
+  stored snapshot kept the old values, so every later options save
+  re-applied the same change and triggered a full multi-product refresh.
+- **`latest_value(hours=...)` was a no-op (H3).** The window anchored on the
+  newest point, which every point trivially satisfies; a months-old daily
+  row was served as a current value. It anchors on `now` and returns
+  unknown for a stale series.
+- **"Today" and "last 24 h" were anchored on the newest point (H4)**, so
+  they could describe a different day than the user's. Both are anchored
+  on UTC `now`.
+- **Station switch left the device registry and duplicate check stale
+  (H5)**: the Device Registry entry is now renamed on switch and the
+  config flow also compares the stored station, not only the unique_id.
+- **HTTP retries held the connection open and retried permanent errors
+  (M1)**: the 429/backoff sleep is scheduled outside the response context,
+  4xx (except 408) fails fast, and response bodies are capped at 8 MiB.
+- **Widened window was forgotten and partial failures dropped data (M2)**:
+  the daily-average fetch now follows the widened window, and a failed
+  product keeps its previous series instead of going unavailable.
+- **Coordinator lifecycle (M3)**: the coordinator receives its
+  `config_entry`, `async_shutdown()` runs on unload (its timer no longer
+  keeps polling NASA), and the station-switch task is cancelled when the
+  select entity is removed.
+- **Options dropdown showed raw URLs (M4)**: it now lists the
+  human-readable source labels while storing the URL values.
+- **`suggested_display_precision` added and lat/lon device class removed
+  (L1)**: latitude/longitude no longer claim `device_class: distance` with
+  a `"°"` unit, which HA rejects for that class.
+
+### Internal
+
+- Test hygiene: the global coordinator-class swap in `test_lifecycle.py`
+  is restored after each test (M6), and the client tests rebind their own
+  aiohttp stub so retry semantics are not masked by another module's
+  permissive stub.
+- New `tests/test_audit_v070.py` (16 tests) covering the findings that had
+  no behavioural test.
+- `pytest.ini` pins `testpaths = tests_ha` so the stub suite is never
+  collected into the real-HA run.
+- Test counts: 184 → 204 (stub suite) + 17 (real-HA suite).
+
 ## [0.6.0] - 2026-10-02
 
 Second pass over the 2026-10-02 critical review (M3–M5 and the MINOR

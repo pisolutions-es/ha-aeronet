@@ -7,6 +7,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -69,6 +70,10 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
         # cancels the previous background fetch instead of stacking
         # duplicate request bursts.
         self._switch_task: asyncio.Task | None = None
+        # v0.7.0 (review L4): cache the deduped dropdown list per payload.
+        # dedupe_display_names() sorts and formats up to ~1675 stations and
+        # used to run on every property access (i.e. on every state write).
+        self._options_cache: tuple[object, list[str]] | None = None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -87,6 +92,9 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         sites = self.coordinator.data or []
+        cached = self._options_cache
+        if cached is not None and cached[0] is sites:
+            return list(cached[1])
         names = dedupe_display_names(sites)
         current = normalize_site(self._data_coord.site)
         # v0.6.0 (review m4): map the current station through the same
@@ -97,7 +105,28 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
         if current and not any(
                 display_to_site_name(n) == current for n in names):
             names.append(current)
-        return names
+        self._options_cache = (sites, names)
+        return list(names)
+
+    def _refresh_device_name(self, site: str) -> None:
+        """Push the new station name into HA's Device Registry.
+
+        v0.7.0 (review H5): HA core reads ``entity.device_info`` only when
+        the entity is added, so the dynamic property alone never updated the
+        Device page (nor the integration card's device) after a station
+        switch — it kept the old station until the next restart.
+        """
+        try:
+            registry = dr.async_get(self.hass)
+            device = registry.async_get_device(
+                identifiers={(DOMAIN, self._entry.entry_id)}
+            )
+            if device is not None:
+                registry.async_update_device(
+                    device.id, name=f"AERONET · {site}"
+                )
+        except Exception:  # pragma: no cover - registry must never break a switch
+            _LOGGER.debug("AERONET device name update failed", exc_info=True)
 
     async def async_select_option(self, option: str) -> None:
         # Display labels may carry a dedupe coordinate suffix, and names must
@@ -108,9 +137,14 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
         self._attr_current_option = option
         self.async_write_ha_state()
         # Persist so the choice survives restarts, then re-poll the new site.
+        # v0.7.0 (review H5): the entry title follows the station too, so the
+        # Integrations card stops advertising the previous one.
         self.hass.config_entries.async_update_entry(
-            self._entry, data={**self._entry.data, CONF_SITE: option}
+            self._entry,
+            data={**self._entry.data, CONF_SITE: option},
+            title=f"AERONET · {option}",
         )
+        self._refresh_device_name(option)
         # v0.5.1 (M2): set_site awaits a full fetch (REQUEST_TIMEOUT_TOTAL of
         # 60 s x 3 attempts, plus backoff and Retry-After waits — worst case
         # ~13 minutes). Blocking the select.select_option service call that
@@ -122,3 +156,15 @@ class AeronetSiteSelect(CoordinatorEntity, SelectEntity):
         self._switch_task = self.hass.async_create_task(
             self._data_coord.set_site(option)
         )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel an in-flight station switch when the entity is unloaded.
+
+        v0.7.0 (review M3): without this, a switch started right before a
+        reload/unload finished afterwards and re-armed the poll timer on a
+        coordinator whose entry was already gone.
+        """
+        if self._switch_task is not None and not self._switch_task.done():
+            self._switch_task.cancel()
+        self._switch_task = None
+        await super().async_will_remove_from_hass()
