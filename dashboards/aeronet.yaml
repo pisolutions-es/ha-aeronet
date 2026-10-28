@@ -1,0 +1,253 @@
+# =============================================================================
+# NASA AERONET - Lovelace dashboard (integration v0.7.0)
+# =============================================================================
+# Ready-to-use dashboard for the NASA AERONET custom integration.
+#
+# HOW TO USE
+#   Option A (UI, no file access needed):
+#     Settings -> Dashboards -> Add dashboard -> Webpage/empty dashboard,
+#     open it, three-dot menu -> "Edit dashboard" -> three-dot menu ->
+#     "Raw configuration editor", paste the content of this file (from the
+#     `title:` line down) and save.
+#   Option B (YAML mode dashboard):
+#     Copy this file to <config>/dashboards/aeronet.yaml and register it:
+#       service: lovelace/dashboards/create
+#       data:
+#         url_path: aeronet
+#         title: NASA AERONET
+#         mode: yaml
+#         filename: dashboards/aeronet.yaml
+#         show_in_sidebar: true
+#         icon: mdi:weather-sunny
+#
+# STATION SUBSTITUTION
+#   Every entity below is written for the station **Valladolid**, whose slug
+#   is `aeronet_valladolid`. If your station is e.g. Madrid, replace
+#   `aeronet_valladolid` with `aeronet_madrid` everywhere.
+#   Entity ids are fixed once created in Home Assistant, so if your instance
+#   was created with a different UI language, look the ids up in
+#   Settings -> Devices & services -> NASA AERONET -> Entities.
+#
+# WHICH ATTRIBUTE FEEDS WHICH CARD
+#   entities / glance ....... sensor states (no attributes involved);
+#                            one row shows `angstrom_440_870` (attribute)
+#   statistics-graph ........ long-term statistics (state_class = measurement,
+#                            recorded by the recorder; NOT attributes)
+#   history-graph ........... recorder state history of the entities
+#   ApexCharts spectrum ..... attribute `spectrum`  -> [[340, 0.043], ...]
+#                            (ordered by wavelength, numeric nm)
+#                            fallback: `channels_latest` -> {"AOD 340nm": 0.043}
+#   ApexCharts 24 h ......... attribute `recent_points_24h` -> [[iso, value]]
+#                            fallback: `today_series` -> [[iso, value]]
+#
+# REQUIREMENTS
+#   - Native cards (entities, glance, statistics-graph, history-graph): none,
+#     they ship with Home Assistant. Recorder must be enabled (it is by
+#     default) for statistics-graph and history-graph.
+#   - The two ApexCharts cards at the bottom are OPTIONAL and need the
+#     community card **apexcharts-card** installed through HACS
+#     (https://github.com/RomRider/apexcharts-card). Delete those two cards
+#     if you do not use HACS; everything else keeps working.
+#   - The `update.nasa_aeronet_update` entity is the HACS update entity for
+#     this repository; it only exists if the integration was installed
+#     through HACS. Remove it from the entities card otherwise.
+# =============================================================================
+
+title: NASA AERONET
+views:
+  - title: AERONET
+    path: aeronet
+    icon: mdi:weather-sunny
+    cards:
+      # ---------------------------------------------------------------- header
+      # Live values. `sensor.aeronet_valladolid_aod` is the main 500 nm AOD.
+      - type: glance
+        title: AOD actual
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 4
+        entities:
+          - entity: sensor.aeronet_valladolid_aod
+            name: AOD 500 nm
+          - entity: sensor.aeronet_valladolid_aod_media_24h
+            name: Media 24 h
+          - entity: sensor.aeronet_valladolid_aod_media_diaria
+            name: Media diaria
+          - entity: sensor.aeronet_valladolid_ultimo_dato
+            name: Último dato
+
+      # Station picker, station metadata and the HACS update entity.
+      # `select.aeronet_valladolid_station` switches stations at runtime and
+      # re-polls NASA immediately. The Ångström row reads an ATTRIBUTE of the
+      # main AOD sensor (derived from 440/870 nm; empty when a channel is
+      # missing), not an entity of its own.
+      - type: entities
+        title: Estación y estado
+        show_header_toggle: false
+        entities:
+          - entity: select.aeronet_valladolid_station
+            name: Estación
+          - entity: sensor.aeronet_valladolid_latitud
+          - entity: sensor.aeronet_valladolid_longitud
+          - entity: sensor.aeronet_valladolid_elevacion
+          - type: divider
+          - entity: sensor.aeronet_valladolid_aod
+            name: Exponente de Ångström (440–870 nm)
+            attribute: angstrom_440_870
+            icon: mdi:alpha-a-circle-outline
+          - type: divider
+          # Optional: HACS-only update entity. Delete this line when the
+          # integration was installed manually.
+          - entity: update.nasa_aeronet_update
+            name: Actualización (HACS)
+
+      # -------------------------------------------------- native: 7 day stats
+      # Long-term statistics (recorder) of the main AOD, hourly resolution,
+      # 7 days. No HACS needed. Mean/min/max come from the `measurement`
+      # state_class the integration sets on this sensor.
+      - type: statistics-graph
+        title: AOD 500 nm · 7 días (estadísticas)
+        chart_type: line
+        period: hour
+        days_to_show: 7
+        stat_types:
+          - mean
+          - max
+        entities:
+          - entity: sensor.aeronet_valladolid_aod
+            name: AOD 500 nm
+
+      # Same card for the spectral channels: one line per wavelength.
+      # Remove the channels your station does not report (the integration
+      # only creates entities for wavelengths actually present in the data).
+      - type: statistics-graph
+        title: Canales AOD · 7 días (estadísticas)
+        chart_type: line
+        period: hour
+        days_to_show: 7
+        stat_types:
+          - mean
+        entities:
+          - entity: sensor.aeronet_valladolid_aod_340nm
+            name: 340 nm
+          - entity: sensor.aeronet_valladolid_aod_380nm
+            name: 380 nm
+          - entity: sensor.aeronet_valladolid_aod_440nm
+            name: 440 nm
+          - entity: sensor.aeronet_valladolid_aod_675nm
+            name: 675 nm
+          - entity: sensor.aeronet_valladolid_aod_870nm
+            name: 870 nm
+          - entity: sensor.aeronet_valladolid_aod_1020nm
+            name: 1020 nm
+          - entity: sensor.aeronet_valladolid_aod_1640nm
+            name: 1640 nm
+
+      # ------------------------------------------------- native: 24 h history
+      # Recorder state history (not statistics): raw sensor states of the
+      # selected channels over the last 24 hours.
+      - type: history-graph
+        title: Canales AOD · 24 h (histórico)
+        hours_to_show: 24
+        refresh_interval: 0
+        entities:
+          - entity: sensor.aeronet_valladolid_aod_440nm
+            name: 440 nm
+          # 500 nm is the main sensor, not a channel entity (no _aod_500nm).
+          - entity: sensor.aeronet_valladolid_aod
+            name: 500 nm
+          - entity: sensor.aeronet_valladolid_aod_870nm
+            name: 870 nm
+          - entity: sensor.aeronet_valladolid_aod_1020nm
+            name: 1020 nm
+
+      # Main AOD over 24 h, plus the daily mean series for context.
+      - type: history-graph
+        title: AOD 500 nm · 24 h (histórico)
+        hours_to_show: 24
+        refresh_interval: 0
+        entities:
+          - entity: sensor.aeronet_valladolid_aod
+            name: AOD 500 nm
+          - entity: sensor.aeronet_valladolid_aod_media_24h
+            name: Media 24 h
+
+      # ------------------------------------------- OPTIONAL: ApexCharts cards
+      # Both cards below require HACS + apexcharts-card. Delete this block if
+      # you do not have HACS installed.
+      #
+      # Card 1 - AOD(lambda) spectrum. Data source: the `spectrum` attribute
+      # of the main AOD sensor, an ordered list of [wavelength_nm, value]
+      # pairs (e.g. [[340, 0.043], [380, 0.041], ...]). If the attribute is
+      # missing (older integration build), the card falls back to
+      # `channels_latest`, a {"AOD 340nm": 0.043, ...} map.
+      - type: custom:apexcharts-card
+        header:
+          title: Espectro AOD(λ)
+          show: true
+          show_states: false
+        graph_span: 1d
+        span:
+          end: minute
+        series:
+          - entity: sensor.aeronet_valladolid_aod
+            name: AOD
+            type: line
+            curve: straight
+            data_generator: |
+              const s = entity.attributes.spectrum;
+              if (Array.isArray(s) && s.length) {
+                return s.map((p) => [Number(p[0]), Number(p[1])]);
+              }
+              const m = entity.attributes.channels_latest || {};
+              return Object.entries(m)
+                .map(([k, v]) => [Number((k.match(/(\d+)\s*nm/) || [])[1]), Number(v)])
+                .filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+        apex_config:
+          chart:
+            height: 320
+          xaxis:
+            type: numeric
+            title:
+              text: λ (nm)
+          yaxis:
+            title:
+              text: AOD
+            min: 0
+          tooltip:
+            x:
+              formatter: |
+                function (val) { return `${Math.round(val)} nm`; }
+
+      # Card 2 - 24 h time series of the main AOD. Data source: the
+      # `recent_points_24h` attribute, a list of [ISO-8601 UTC timestamp,
+      # value] pairs. `today_series` is used as a fallback (current UTC day).
+      - type: custom:apexcharts-card
+        header:
+          title: AOD 500 nm · 24 h
+          show: true
+          show_states: true
+          colorize_states: true
+        graph_span: 24h
+        span:
+          end: minute
+        series:
+          - entity: sensor.aeronet_valladolid_aod
+            name: AOD
+            type: line
+            curve: smooth
+            data_generator: |
+              const pts = entity.attributes.recent_points_24h
+                || entity.attributes.today_series
+                || [];
+              return pts.map((p) => [new Date(p[0]).getTime(), Number(p[1])]);
+        apex_config:
+          chart:
+            height: 300
+          yaxis:
+            min: 0
+            title:
+              text: AOD
+          xaxis:
+            type: datetime

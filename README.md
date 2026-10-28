@@ -84,23 +84,94 @@ channels found in the data**:
   (its history is kept). Empty/absent selection = all detected channels,
   which is the default for fresh installs and migrated v0.3.x entries.
 - **Attributes**: the main `aod` (and `ssa`) sensor carries
-  `channels_latest`, a compact `{ "AOD 340nm": 0.043, ... }` spectrum map
-  — a single-entity way to chart AOD(λ) like NASA's official product
-  pages. Each channel sensor carries its own `today_series` and
+  `channels_latest`, a compact `{ "AOD 340nm": 0.043, ... }` spectrum map,
+  and `spectrum`, the same data already sorted by wavelength as numeric
+  `[nm, value]` pairs (`[[340, 0.043], [380, 0.041], ...]`) so a chart does
+  not have to parse labels. It also exposes `angstrom_440_870`, the
+  Ångström exponent α(440–870 nm) derived from the two channels
+  (`α = -ln(τ₄₄₀/τ₈₇₀) / ln(440/870)`), or `null` when a channel is
+  missing. Each channel sensor carries its own `today_series` and
   `recent_points_24h` for per-channel ApexCharts cards.
 - **Attribute size limit**: Home Assistant's recorder refuses state
   objects whose attributes exceed **16 KiB**. Sensors therefore build
-  their attributes under a 14 KiB budget: if a station's series
-  would not fit, `recent_points_24h` is dropped first, then
-  `today_series` (and per-product `*_series_24h`), and the attribute
-  `series_limited: true` marks the omission. This applies to **every**
-  sensor carrying raw series — the main 500 nm `aod` sensor included
-  (since v0.5.0): on a dense station its `today_series` is trimmed too,
-  while compact aggregates (`channels_latest`, `daily_mean_aod`) are kept
+  their attributes under a 14 KiB budget: the largest raw series is
+  decimated (every second point, down to 32 points) until the payload
+  fits, so a dense station still gets a chartable curve; only if that is
+  not enough is a series dropped. Either way `series_limited: true` marks
+  the trim. This applies to **every** sensor carrying raw series — the
+  main 500 nm `aod` sensor included (since v0.5.0) — while compact
+  aggregates (`channels_latest`, `spectrum`, `daily_mean_aod`) are kept
   as long as possible.
 - **VOL has no wavelength channels**: its columns (VolC-T/F/C, REff-T) are
   size-retrieval components, not wavelengths, so the VOL product keeps its
   single sensor with component attributes.
+
+## Visualización
+
+The integration is built so a dashboard works out of the box: every
+numeric sensor declares `state_class: measurement` (so Home Assistant
+records long-term statistics for it), AOD/SSA are unitless by design, and
+`suggested_display_precision` is 4 for optical quantities. A ready-to-use
+dashboard ships in [`dashboards/aeronet.yaml`](dashboards/aeronet.yaml)
+(station example: **Valladolid**, slug `aeronet_valladolid`).
+
+### Importing the dashboard
+
+- **UI only (no file access)**: *Settings → Dashboards → Add dashboard →
+  empty dashboard*, open it, ⋮ → *Edit dashboard* → ⋮ →
+  **Raw configuration editor**, paste the YAML from the `title:` line down
+  and save.
+- **YAML mode dashboard**: copy the file to `<config>/dashboards/aeronet.yaml`
+  and register it once:
+
+  ```yaml
+  service: lovelace/dashboards/create
+  data:
+    url_path: aeronet
+    title: NASA AERONET
+    mode: yaml
+    filename: dashboards/aeronet.yaml
+    show_in_sidebar: true
+    icon: mdi:weather-sunny
+  ```
+
+- **Other station**: replace `aeronet_valladolid` with your slug everywhere.
+  Entity ids are fixed once created, so look them up under *Settings →
+  Devices & services → NASA AERONET → Entities* if your instance was
+  created in a different language.
+
+### Requirements
+
+| Card | Needs |
+| --- | --- |
+| `entities`, `glance` | nothing (core) |
+| `statistics-graph` | recorder enabled (default) and `state_class: measurement` |
+| `history-graph` | recorder enabled (default) |
+| `custom:apexcharts-card` | **optional**: HACS + apexcharts-card |
+
+Without HACS, delete the two ApexCharts cards at the bottom of the file;
+the native cards keep covering the same data.
+
+### Which attribute feeds which card
+
+| Card | Data source |
+| --- | --- |
+| `glance` / `entities` | sensor states; one row shows the `angstrom_440_870` attribute of the main AOD sensor |
+| `statistics-graph` | long-term statistics of the entities (hourly mean/max, 7 days) — not attributes |
+| `history-graph` | recorder state history (24 h) of the selected channels |
+| ApexCharts spectrum | `spectrum` attribute → `[[nm, value], ...]`; falls back to `channels_latest` |
+| ApexCharts 24 h | `recent_points_24h` attribute → `[[iso, value], ...]`; falls back to `today_series` |
+
+### Long-term statistics
+
+Statistics are recorded per entity as soon as it has `state_class:
+measurement`; the unit is optional and **must not be invented** — adding a
+synthetic unit such as `""` or `"AOD"` would make the recorder treat
+existing history as a unit change. The `statistics-graph` cards therefore
+read the recorder's hourly statistics, which survive purges of raw states
+and stay available for years. The `tests_ha/` suite asserts this
+eligibility against a real Home Assistant build.
+
 
 ## Technical details
 
@@ -127,18 +198,37 @@ channels found in the data**:
 
 ## Tests
 
+Two suites, deliberately separated:
+
 ```
-python3 -m unittest discover -s tests
+# 1. Fast, stdlib-only suite against a hand-written HA stub
+python3 -m unittest discover -s tests        # 204 tests
+
+# 2. Real Home Assistant 2026.10.4 (Python 3.14 venv, uv)
+.venv-ha/bin/python -m pytest tests_ha       # 17 tests
 ```
 
-184 tests covering real fixtures (active v3921 station list, Valladolid data
-across all products and all wavelength channels 340–1640 nm, CSV parsing,
-URL generation incl. the widened 30-day
-window, HTTP retry/Retry-After behaviour, site-list disk persistence and
-dedupe, sensor state mapping, config-entry migrations v1→v3 and the
-attribute-size budget rule). Real behavior tests cover the setup/unload
-lifecycle, the update listener, the station select, both config flows and
-the repair-issue registry. Stdlib only (aiohttp/Home Assistant stubbed).
+`tests/` (204 tests) covers real fixtures (active v3921 station list,
+Valladolid data across all products and all wavelength channels
+340–1640 nm, CSV parsing, URL generation incl. the widened 30-day window,
+HTTP retry/`Retry-After` behaviour and the permanent-4xx fast path,
+site-list disk persistence and dedupe, sensor state mapping, config-entry
+migrations v1→v3, the attribute-size budget rule and decimation, the
+multi-product fetch, the widened-window bookkeeping, partial-failure
+retention, translation parity and the Ångström/spectrum helpers). Real
+behaviour tests cover the setup/unload lifecycle, the update listener, the
+station select, both config flows and the repair-issue registry.
+
+`tests_ha/` (17 tests) runs the integration inside a real Home Assistant:
+setup creates the sensors with values, every measurement sensor is
+statistics-eligible under HA's own rule, channel entities appear, unload
+stops the coordinator, the published entity_ids are unchanged, both flows
+validate against real selectors and `OptionsFlowWithConfigEntry`, and the
+shipped dashboard parses and only references existing entities.
+
+The stub suite must not be collected by pytest: importing
+`tests/ha_stubs.py` injects fake `homeassistant` modules into
+`sys.modules`. `pytest.ini` therefore pins `testpaths = tests_ha`.
 
 ## Known limitations
 
