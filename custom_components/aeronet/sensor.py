@@ -35,9 +35,11 @@ from .parsers import (
     SDA_FINE_SLOT,
     SSA_SLOT,
     VOL_SLOT,
+    angstrom_440_870,
     channel_id,
     channel_label,
     channel_nm,
+    channel_spectrum,
     daily_series,
     latest_point,
     latest_value,
@@ -65,11 +67,15 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         key="aod",
         translation_key="aod",
         state_class=SensorStateClass.MEASUREMENT,
+        # v0.7.0 (review L1): a consistent display hint so every dashboard
+        # tile renders the same number of decimals (AOD is dimensionless).
+        suggested_display_precision=4,
     ),
     SensorEntityDescription(
         key="aod_24h",
         translation_key="aod_24h",
         state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=4,
     ),
     SensorEntityDescription(
         key="last_data",
@@ -85,12 +91,14 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         # class distance" otherwise). Plain degree values are still shown.
         native_unit_of_measurement="°",
         entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=4,
     ),
     SensorEntityDescription(
         key="longitude",
         translation_key="longitude",
         native_unit_of_measurement="°",
         entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=4,
     ),
     SensorEntityDescription(
         key="elevation",
@@ -98,6 +106,7 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.DISTANCE,
         native_unit_of_measurement="m",
         entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=0,
     ),
 )
 
@@ -108,6 +117,7 @@ PRODUCT_SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
             key="aod_daily",
             translation_key="aod_daily",
             state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=4,
         ),
     ),
     PRODUCT_SDA: (
@@ -115,11 +125,13 @@ PRODUCT_SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
             key="sda_fine",
             translation_key="sda_fine",
             state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=4,
         ),
         SensorEntityDescription(
             key="sda_coarse",
             translation_key="sda_coarse",
             state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=4,
         ),
     ),
     PRODUCT_SSA: (
@@ -127,6 +139,7 @@ PRODUCT_SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
             key="ssa",
             translation_key="ssa",
             state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=4,
         ),
     ),
     PRODUCT_VOL: (
@@ -135,6 +148,7 @@ PRODUCT_SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
             translation_key="vol",
             state_class=SensorStateClass.MEASUREMENT,
             native_unit_of_measurement="µm³/cm³",
+            suggested_display_precision=4,
         ),
     ),
 }
@@ -152,6 +166,7 @@ def channel_description(channel: str) -> SensorEntityDescription:
         key=channel,
         name=channel_label(channel),
         state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=4,
     )
 
 
@@ -182,11 +197,15 @@ def apply_series_budget(attrs: dict) -> dict:
     Trims the *largest* raw-series attribute first (``recent_points_24h``,
     ``today_series``, ``<product>_series_24h``) until the serialized dict
     fits ATTRS_BYTE_BUDGET; compact aggregates (point counts, channels_latest)
-    are kept as long as possible. Any drop is flagged
+    are kept as long as possible. Any change is flagged
     ``series_limited: true`` so automations can tell a trimmed series from
     a genuinely empty one. Used by channel sensors and, since v0.5.0, the
     main aod/ssa/sda sensors: a dense station's raw points blow past 16 KiB
     and the recorder silently drops the whole state otherwise.
+
+    v0.7.0 (review M5): a series is *decimated* (every other point, down to
+    32 points) before it is dropped, so a card reading it renders a coarser
+    curve instead of going blank on high-cadence stations.
     """
     series_keys = ("recent_points_24h", "today_series")
 
@@ -200,9 +219,25 @@ def apply_series_budget(attrs: dict) -> dict:
         out += sorted(extras, key=lambda k: -_attr_blob_size({k: attrs[k]}))
         return out
 
-    for key in _candidates():
-        if _attr_blob_size(attrs) <= ATTRS_BYTE_BUDGET:
+    keys = _candidates()
+    # v0.7.0 (review M5): decimate the *largest* series repeatedly instead
+    # of dropping one outright, so every series survives (coarser) while the
+    # payload shrinks. A series is only dropped once it is down to 32
+    # points and the dict still does not fit.
+    while _attr_blob_size(attrs) > ATTRS_BYTE_BUDGET:
+        decimatable = [k for k in keys
+                       if k in attrs and isinstance(attrs[k], list)
+                       and len(attrs[k]) > 32]
+        if decimatable:
+            key = max(decimatable,
+                      key=lambda k: _attr_blob_size({k: attrs[k]}))
+            attrs[key] = attrs[key][::2]
+            attrs["series_limited"] = True
+            continue
+        remaining = [k for k in keys if k in attrs]
+        if not remaining:
             break
+        key = max(remaining, key=lambda k: _attr_blob_size({k: attrs[k]}))
         attrs.pop(key)
         attrs["series_limited"] = True
     return attrs
@@ -307,6 +342,18 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
     def available(self) -> bool:
         return bool(self._coord.last_update_success and self._coord.data is not None)
 
+    def _mean_24h(self) -> tuple[float | None, dict]:
+        """24 h mean and its window description, cached per payload (L4)."""
+        data = self._coord.data
+        if data is None:
+            return None, {"window": "no_data"}
+        cache = getattr(self, "_mean_cache", None)
+        if cache is not None and cache[0] is data:
+            return cache[1]
+        result = last_24h_mean_with_window(data)
+        self._mean_cache = (data, result)
+        return result
+
     @property
     def native_value(self) -> Any:
         data = self._coord.data
@@ -317,7 +364,7 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             p = latest_point(data)
             return round(p.aod, 4) if p else None
         if key == "aod_24h":
-            return last_24h_mean_with_window(data)[0]
+            return self._mean_24h()[0]
         if key == "aod_daily":
             p = latest_value(data, "aod_daily", hours=26)
             return round(p.aod, 4) if p else None
@@ -361,6 +408,11 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
                 "recent_points_24h": recent_points(data, hours=24),
                 "today_series": today_series(data),
                 "channels_latest": channels_latest(data, "aod"),
+                # v0.7.0: chart-ready additions. `spectrum` is the compact
+                # wavelength-ordered [nm, AOD] view (AOD(λ) cards) and
+                # `angstrom_440_870` the derived Ångström exponent.
+                "spectrum": channel_spectrum(data, "aod"),
+                "angstrom_440_870": angstrom_440_870(data),
             })
         if key == "aod_daily":
             return {"daily_series_7d": last_days_series(data, "aod_daily")}
@@ -369,7 +421,9 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             # "the last day with data" may be weeks old for campaign
             # stations; the window attribute tells automations what the
             # value actually covers.
-            return last_24h_mean_with_window(data)[1]
+            # v0.7.0 (review L4): shared with native_value through a per-data
+            # cache so both read the same 24 h window (no midnight race).
+            return self._mean_24h()[1]
         if key in ("sda_fine", "sda_coarse"):
             slot = SDA_FINE_SLOT if key == "sda_fine" else SDA_COARSE_SLOT
             attrs = apply_series_budget({
@@ -385,6 +439,8 @@ class AeronetSensor(CoordinatorEntity, SensorEntity):
             return {
                 "wavelength": p.wavelength if p else None,
                 "channels_latest": channels_latest(data, "ssa"),
+                # v0.7.0: same compact spectrum shape as the AOD sensor.
+                "spectrum": channel_spectrum(data, "ssa"),
             }
         if key == "vol":
             p = latest_value(data, VOL_SLOT, hours=26)

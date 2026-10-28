@@ -32,6 +32,7 @@ from .urls import (
 )
 from .const import (
     DATA_WINDOW_DAYS,
+    MAX_RESPONSE_BYTES,
     MAX_RETRIES,
     REQUEST_TIMEOUT_CONNECT,
     REQUEST_TIMEOUT_TOTAL,
@@ -100,6 +101,11 @@ class AeronetClient:
         )
         last_err: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
+            # v0.7.0 (review M1): the wait for a 429 (or for a backoff) is
+            # scheduled *outside* the response context, so the aiohttp
+            # connection is released before sleeping — holding it open for
+            # up to RETRY_AFTER_MAX (5 min) starved the connection pool.
+            retry_delay: float | None = None
             try:
                 async with self._session.get(
                     url,
@@ -111,13 +117,31 @@ class AeronetClient:
                         # AERONET rate limit: honor Retry-After (bounded) so
                         # the retry actually helps instead of hammering.
                         if attempt < MAX_RETRIES:
-                            await asyncio.sleep(
-                                _retry_after_seconds(resp.headers.get("Retry-After"))
+                            retry_delay = _retry_after_seconds(
+                                resp.headers.get("Retry-After")
                             )
-                            continue
-                        raise AeronetError("AERONET rate limit (HTTP 429)")
-                    resp.raise_for_status()
-                    return await resp.text(errors="replace")
+                        else:
+                            raise AeronetError(
+                                "AERONET rate limit (HTTP 429)")
+                    elif 400 <= resp.status < 500 and resp.status != 408:
+                        # v0.7.0 (review M1): a permanent client error (bad
+                        # parameters, unknown site, forbidden) will fail the
+                        # same way on every retry — fail fast instead of
+                        # tripling the request count.
+                        raise AeronetError(
+                            f"AERONET request rejected (HTTP {resp.status})")
+                    else:
+                        resp.raise_for_status()
+                        # v0.7.0 (review M1): cap the body so a malformed
+                        # multi-station response cannot balloon the event
+                        # loop's memory before the parser rejects it.
+                        raw = await resp.content.read(MAX_RESPONSE_BYTES + 1)
+                        if len(raw) > MAX_RESPONSE_BYTES:
+                            raise AeronetError(
+                                "AERONET response exceeds "
+                                f"{MAX_RESPONSE_BYTES} bytes"
+                            )
+                        return raw.decode("utf-8", errors="replace")
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 last_err = err
                 if attempt < MAX_RETRIES:
@@ -125,9 +149,9 @@ class AeronetClient:
                     # plus 0..1s of uniform jitter so concurrent entries
                     # (site list + several data coordinators) do not retry in
                     # lockstep.
-                    await asyncio.sleep(
-                        RETRY_BACKOFF * (2 ** attempt) + random.random()
-                    )
+                    retry_delay = RETRY_BACKOFF * (2 ** attempt) + random.random()
+            if retry_delay is not None:
+                await asyncio.sleep(retry_delay)
         raise AeronetError(
             f"request failed after retries: {_redacted(str(last_err))}"
         ) from last_err

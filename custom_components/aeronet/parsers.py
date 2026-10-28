@@ -9,6 +9,7 @@ import csv
 import datetime as dt
 import io
 import logging
+import math
 from dataclasses import dataclass, field
 
 _LOGGER = logging.getLogger(__name__)
@@ -166,6 +167,55 @@ def active_channels(detected: list[str],
         return list(detected)
     chosen = set(configured)
     return [c for c in detected if c in chosen]
+
+
+def channel_spectrum(data: "AeronetData", family: str) -> list[list[int | float]]:
+    """Wavelength-ordered ``[nm, latest_value]`` pairs of a product family.
+
+    v0.7.0: the compact spectrum view for graphing cards (AOD(λ)). Unlike
+    ``channels_latest`` (a label->value dict) this is already sorted by
+    wavelength and carries the numeric wavelength, so a chart does not have
+    to parse labels. The main-sensor wavelength is included.
+    """
+    out: list[tuple[int, float]] = []
+    for slot, series in data.values.items():
+        if not series:
+            continue
+        if slot == family:
+            # The main slot carries the promoted/preferred wavelength in the
+            # point label (e.g. "AOD_500nm"), not in its key.
+            pattern = CHANNEL_FAMILY_COLUMNS.get(family)
+            mm = pattern.match(series[-1].wavelength or "") if pattern else None
+            if not mm:
+                continue
+            nm = int(mm.group(1))
+        elif slot.startswith(f"{family}_"):
+            try:
+                nm = channel_nm(slot)
+            except ValueError:
+                continue
+        else:
+            continue
+        out.append((nm, round(series[-1].aod, 4)))
+    return [[nm, val] for nm, val in sorted(out)]
+
+
+def angstrom_440_870(data: "AeronetData") -> float | None:
+    """Ångström exponent α(440–870) from the latest 440/870 nm AOD values.
+
+    α = -ln(τ440 / τ870) / ln(440 / 870). A derived quantity (not a NASA
+    product): None when either channel is missing or non-positive, since the
+    logarithm is undefined there.
+    """
+    s440 = data.values.get("aod_440nm") or []
+    s870 = data.values.get("aod_870nm") or []
+    if not s440 or not s870:
+        return None
+    a440 = s440[-1].aod
+    a870 = s870[-1].aod
+    if a440 <= 0 or a870 <= 0:
+        return None
+    return round(-math.log(a440 / a870) / math.log(440.0 / 870.0), 3)
 
 
 def is_help_html(body: str) -> bool:
@@ -392,7 +442,18 @@ def parse_data_csv(
             mm = pattern.match(header[main_col])
             if mm:
                 main_channels[family] = channel_id(family, int(mm.group(1)))
-    value_slots = list(resolved)
+    # v0.7.0 (review C2): the preferred column of the primary slot can be
+    # present in the header while every one of its rows is -999 (stations
+    # without that filter — e.g. no 500 nm channel). Parse the remaining
+    # candidates of that slot too, so the main sensor can fall back to one
+    # that actually carries data instead of staying empty forever.
+    alt_columns: dict[str, int] = {}
+    for candidate in column_sets[primary_slot]:
+        col = idx.get(candidate)
+        if col is not None and col != resolved.get(primary_slot):
+            alt_columns[f"__alt_{col}"] = col
+    parse_columns: dict[str, int] = {**resolved, **alt_columns}
+    value_slots = list(parse_columns)
 
     # Fine-mode fraction is attribute data on SDA payloads, not a sensor.
     frac_col = idx.get(SDA_FRACTION_COLUMNS[0])
@@ -427,7 +488,7 @@ def parse_data_csv(
             continue
         row_ok = False
         for slot in value_slots:
-            col = resolved[slot]
+            col = parse_columns[slot]
             try:
                 val = float(row[col])
             except (ValueError, IndexError):
@@ -468,6 +529,25 @@ def parse_data_csv(
         meta.name = "unknown"
     for lst in series.values():
         lst.sort(key=lambda p: p.time)
+    # v0.7.0 (review C2): if the preferred column carried no data at all,
+    # promote the first candidate column that did, and record it as the
+    # main channel of its family so no duplicate channel entity is created.
+    if not series[primary_slot]:
+        for alt, col in alt_columns.items():
+            if not series[alt]:
+                continue
+            series[primary_slot] = series[alt]
+            chosen = header[col]
+            for family, main_slot in CHANNEL_FAMILY_MAIN_SLOT.items():
+                if main_slot != primary_slot:
+                    continue
+                pattern = CHANNEL_FAMILY_COLUMNS.get(family)
+                mm = pattern.match(chosen) if pattern else None
+                if mm:
+                    main_channels[family] = channel_id(family, int(mm.group(1)))
+            break
+    for alt in alt_columns:
+        series.pop(alt, None)
     if fractions:
         meta.extras["fine_mode_fraction"] = fractions
     for family, chan in main_channels.items():
@@ -557,20 +637,36 @@ def daily_series(data: AeronetData) -> dict[str, float]:
     return {day: round(sum(v) / len(v), 4) for day, v in sorted(buckets.items())}
 
 
-def recent_points(data: AeronetData, hours: int = 24) -> list[list[str | float]]:
+def recent_points(
+    data: AeronetData, hours: int = 24, now: dt.datetime | None = None
+) -> list[list[str | float]]:
     """[iso_time, aod] pairs of the last `hours` for graphing attributes."""
-    return points_recent(data.points, hours)
+    return points_recent(data.points, hours, now)
 
 
 def latest_value(
-    data: AeronetData, slot: str, hours: int | None = None
+    data: AeronetData,
+    slot: str,
+    hours: int | None = None,
+    now: dt.datetime | None = None,
 ) -> AodPoint | None:
-    """Latest point of a product series (optionally within the last `hours`)."""
+    """Latest point of a product series (optionally within the last `hours`).
+
+    v0.7.0 (review H3): the window used to be anchored on the newest point
+    of the series (``pts[-1].time - hours``), which every point trivially
+    satisfies — the ``hours`` argument was a no-op and a station whose last
+    daily row was months old still reported it as a current value. It is
+    anchored on *now* now, so a stale series yields None (unknown) instead
+    of a silently stale number.
+    """
     pts = data.values.get(slot) or []
     if hours is not None:
         if not pts:
             return None
-        cutoff = pts[-1].time - dt.timedelta(hours=hours)
+        ref = (now or dt.datetime.now(dt.timezone.utc)).astimezone(
+            dt.timezone.utc
+        )
+        cutoff = ref - dt.timedelta(hours=hours)
         pts = [p for p in pts if p.time >= cutoff]
     return pts[-1] if pts else None
 
@@ -583,20 +679,34 @@ def value_series(
     return [[p.time.isoformat(), p.aod] for p in pts]
 
 
-def points_today(pts: list[AodPoint]) -> list[list[str | float]]:
-    """[iso_time, aod] pairs of the current UTC day, from a point list."""
+def points_today(
+    pts: list[AodPoint], now: dt.datetime | None = None
+) -> list[list[str | float]]:
+    """[iso_time, aod] pairs of the current UTC day, from a point list.
+
+    v0.7.0 (review H4): the day boundary is anchored to *now*, not to the
+    newest point. Anchoring on the newest point made a station whose last
+    measurement was weeks ago report that old day as "today".
+    """
     if not pts:
         return []
-    ref = max(p.time for p in pts)
+    ref = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     midnight = ref.replace(hour=0, minute=0, second=0, microsecond=0)
     return [[p.time.isoformat(), p.aod] for p in pts if p.time >= midnight]
 
 
-def points_recent(pts: list[AodPoint], hours: int = 24) -> list[list[str | float]]:
-    """[iso_time, aod] pairs of the last `hours` of a point list."""
+def points_recent(
+    pts: list[AodPoint], hours: int = 24, now: dt.datetime | None = None
+) -> list[list[str | float]]:
+    """[iso_time, aod] pairs of the last `hours` of a point list.
+
+    v0.7.0 (review H4): the window ends at *now*, not at the newest point —
+    a stale station no longer advertises a weeks-old window as "24 h".
+    """
     if not pts:
         return []
-    cutoff = pts[-1].time - dt.timedelta(hours=hours)
+    ref = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
+    cutoff = ref - dt.timedelta(hours=hours)
     return [[p.time.isoformat(), p.aod] for p in pts if p.time >= cutoff]
 
 
@@ -606,9 +716,11 @@ def today_series(
     """Full current UTC day [iso_time, aod] series (00:00 -> latest point).
 
     Sourced from the all-points fetch, so it covers today's measurements
-    since midnight regardless of how long the poll window is.
+    since midnight regardless of how long the poll window is. Empty before
+    the station's first measurement of the day — that is the honest answer
+    for "today".
     """
-    return points_today(data.points)
+    return points_today(data.points, now)
 
 
 def last_days_series(

@@ -119,8 +119,17 @@ def site_already_configured(hass, site: str) -> bool:
     except AttributeError:  # flow scaffolding without a config_entries
         return False
     return any(
-        bool(uid := getattr(entry, "unique_id", "") or "")
-        and _canonical_site(_unique_id_site(uid)) == want
+        (
+            bool(uid := getattr(entry, "unique_id", "") or "")
+            and _canonical_site(_unique_id_site(uid)) == want
+        )
+        # v0.7.0 (review H5): also compare the station actually stored in
+        # the entry. The select entity changes entry.data without touching
+        # unique_id, so a switched entry used to block its OLD station and
+        # allow a duplicate of its NEW one.
+        or _canonical_site(
+            (getattr(entry, "data", None) or {}).get(CONF_SITE, "")
+        ) == want
         for entry in entries
     )
 
@@ -254,7 +263,14 @@ class AeronetOptionsFlow(config_entries.OptionsFlowWithConfigEntry):
                         default=cur.get(CONF_SITE_LIST_URL, SITE_LIST_URL),
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
-                            options=list(SITE_LIST_URL_OPTIONS.keys()),
+                            # v0.7.0 (review M4): the selector shows the
+                            # human labels while storing the URL values.
+                            # Passing the raw keys made the dropdown list
+                            # two long NASA URLs.
+                            options=[
+                                {"value": k, "label": v}
+                                for k, v in SITE_LIST_URL_OPTIONS.items()
+                            ],
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),

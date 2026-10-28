@@ -86,8 +86,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         site=merged.get(CONF_SITE) or "",
         products=list(merged.get(CONF_PRODUCTS) or DEFAULT_PRODUCTS),
         entry_id=entry.entry_id,
+        # v0.7.0 (review M3): HA can identify the coordinator's entry.
+        config_entry=entry,
     )
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+    store = {
         "data": data_coord,
         "sites": sites_coord,
         # v0.5.0 snapshot of every option the update listener compares
@@ -107,6 +109,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_SITE: entry.data.get(CONF_SITE, DEFAULT_SITE),
         },
     }
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = store
+    # v0.7.0 (review L3): expose the store the modern way too. hass.data
+    # stays as an alias so nothing that already reads it breaks.
+    entry.runtime_data = store
 
     # v0.5.1 (C1): first_refresh BEFORE forwarding platforms — HA's
     # documented order. A failed first poll now raises ConfigEntryNotReady
@@ -138,7 +144,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         # .get(): unload may run while setup never completed (entry sitting
         # in HA's retry loop) — hass.data[DOMAIN] may not hold this entry.
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        store = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        # v0.7.0 (review M3): shut the data coordinator down. Its refresh
+        # timer and listeners otherwise survive the unload and keep polling
+        # NASA for an entry that no longer exists.
+        coord = (store or {}).get("data")
+        if coord is not None:
+            try:
+                await coord.async_shutdown()
+            except Exception:  # pragma: no cover - teardown must not fail
+                _LOGGER.debug("AERONET coordinator shutdown failed",
+                              exc_info=True)
+        try:
+            entry.runtime_data = None
+        except AttributeError:  # pragma: no cover - very old HA entries
+            pass
     return unload_ok
 
 
@@ -244,4 +264,11 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         level=new_level,
         interval_min=new_interval,
     )
+    # v0.7.0 (review H2): refresh the snapshot with what was just applied.
+    # It used to stay at the setup-time values, so every later save
+    # re-applied the same change (and reverting an option to its original
+    # value looked like a no-op and was silently ignored).
+    snap[CONF_EMAIL] = new_email
+    snap[CONF_LEVEL] = new_level
+    snap[CONF_INTERVAL_MIN] = new_interval
     await coord.async_refresh()
