@@ -17,11 +17,22 @@ class _StubClientError(Exception):
     pass
 
 
+class _StubContent:
+    """Minimal aiohttp StreamReader stand-in (v0.7.0: client reads content)."""
+
+    def __init__(self, body=""):
+        self._raw = body.encode("utf-8")
+
+    async def read(self, n=-1):
+        return self._raw if n < 0 else self._raw[:n]
+
+
 class _StubResp:
     def __init__(self, status=200, body="", headers=None):
         self.status = status
         self._body = body
         self.headers = headers or {}
+        self.content = _StubContent(body)
 
     async def __aenter__(self):
         return self
@@ -62,6 +73,13 @@ _install_stub()
 
 import os
 from custom_components.aeronet import client as client_mod  # noqa: E402
+
+# v0.7.0 (review M6): client.py may have been imported earlier by another
+# module while a *different* aiohttp stub (tests/ha_stubs.py, whose
+# ClientError is Exception) was installed. Rebinding the module reference
+# here keeps the retry semantics meaningful: only real aiohttp errors are
+# retried, so a permanent 4xx / oversize body fails fast.
+client_mod.aiohttp = sys.modules["aiohttp"]
 from custom_components.aeronet.client import AeronetClient, _retry_after_seconds  # noqa: E402
 from custom_components.aeronet.const import MAX_RETRIES, RETRY_AFTER_MAX, RETRY_BACKOFF  # noqa: E402
 from custom_components.aeronet.parsers import AeronetError  # noqa: E402
@@ -158,6 +176,32 @@ class ClientRetryTests(unittest.TestCase):
         with self.assertRaises(AeronetError) as ctx:
             _run(c._get_text("http://x"))
         self.assertIn("429", str(ctx.exception))
+
+    def test_permanent_4xx_fails_fast_without_retry(self):
+        """v0.7.0 (review M1): a 404 will fail identically on every retry."""
+        c = self._client([_StubResp(status=404)])
+        with self.assertRaises(AeronetError) as ctx:
+            _run(c._get_text("http://x"))
+        self.assertIn("404", str(ctx.exception))
+        self.assertEqual(len(c._session.requests), 1)
+        self.assertEqual(self.spy.delays, [])
+
+    def test_408_is_still_retried(self):
+        """408 (request timeout) is transient, not a permanent rejection."""
+        c = self._client([_StubResp(status=408), _StubResp(body="ok")])
+        self.assertEqual(_run(c._get_text("http://x")), "ok")
+        self.assertEqual(len(c._session.requests), 2)
+
+    def test_oversized_response_is_rejected_without_retry(self):
+        """v0.7.0 (review M1): the body is capped before parsing."""
+        self.addCleanup(setattr, client_mod, "MAX_RESPONSE_BYTES",
+                        client_mod.MAX_RESPONSE_BYTES)
+        client_mod.MAX_RESPONSE_BYTES = 8
+        c = self._client([_StubResp(body="x" * 64)])
+        with self.assertRaises(AeronetError) as ctx:
+            _run(c._get_text("http://x"))
+        self.assertIn("exceeds", str(ctx.exception))
+        self.assertEqual(len(c._session.requests), 1)
 
 
 class RetryAfterParsingTests(unittest.TestCase):

@@ -219,27 +219,41 @@ class TestChannelEntitySurface(unittest.TestCase):
         self.assertIn("today_series", attrs)
         self.assertIn("recent_points_24h", attrs)
         self.assertNotIn("series_limited", attrs)
-        # A giant series must stay under the recorder's 16 KiB attribute cap:
-        # drop recent_points_24h first, then today_series, flag the drop.
+        # A giant series must stay under the recorder's 16 KiB attribute cap.
+        # v0.7.0 (M5): series are decimated (kept, coarser) instead of being
+        # dropped outright, and the trim is flagged with series_limited.
         big = [[f"2026-09-{d:02d}T{h:02d}:00:00+00:00", 0.04321]
                for d in range(1, 29) for h in range(24)]
         attrs = sm.channel_series_attrs(big, big)
         blob = json.dumps(attrs)
         self.assertLess(len(blob.encode("utf-8")), 16384)
         self.assertTrue(attrs.get("series_limited"))
-        self.assertNotIn("recent_points_24h", attrs)
+        self.assertIn("recent_points_24h", attrs)
+        self.assertIn("today_series", attrs)
+        self.assertLess(len(attrs["recent_points_24h"]), len(big))
+        self.assertLess(len(attrs["today_series"]), len(big))
+        # Decimation must keep chronological order.
+        times = [iso for iso, _ in attrs["recent_points_24h"]]
+        self.assertEqual(times, sorted(times))
 
     def test_main_aod_attrs_honour_the_budget(self):
         """v0.5.0 F5: the MAIN aod sensor carried its series WITHOUT the
         budget the channel sensors got — a dense station's 7-day points blow
-        past the recorder's 16 KiB cap and the state is silently dropped."""
+        past the recorder's 16 KiB cap and the state is silently dropped.
+
+        v0.7.0 (M5): the series are decimated instead of being dropped, and
+        the 24 h window is anchored on *now*, so the payload is built
+        around the current time.
+        """
         import datetime as dt
         from custom_components.aeronet import sensor as sm
         from custom_components.aeronet.parsers import AeronetData, SiteMeta, AodPoint
         data = AeronetData(meta=SiteMeta(name="Madrid", latitude=1,
                                          longitude=2, elevation=3))
-        base = dt.datetime(2026, 9, 10, tzinfo=dt.timezone.utc)
-        # ~7 days at 1-minute cadence: ~10k points, far past 16 KiB.
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        base = now - dt.timedelta(minutes=9900)
+        # ~6.9 days at 1-minute cadence: ~1.4k points inside the last 24 h,
+        # far past 16 KiB.
         data.points = [AodPoint(time=base + dt.timedelta(minutes=i),
                                 aod=0.1234, wavelength="AOD_500nm")
                        for i in range(9900)]
@@ -251,13 +265,20 @@ class TestChannelEntitySurface(unittest.TestCase):
         desc = next(d for d in sm.SENSORS if d.key == "aod")
         ent = sm.AeronetSensor(coord, entry, desc)
         attrs = ent.extra_state_attributes
+        self.assertIsNotNone(attrs)
         blob = json.dumps(attrs)
         self.assertLess(
             len(blob.encode("utf-8")), 16384,
             "main aod sensor attributes must stay under the recorder cap")
         self.assertTrue(attrs.get("series_limited"))
-        self.assertNotIn("recent_points_24h", attrs)
-        self.assertNotIn("today_series", attrs)
+        # M5: decimated, not deleted — a chart still has a curve to draw.
+        self.assertIn("recent_points_24h", attrs)
+        self.assertIn("today_series", attrs)
+        self.assertLessEqual(len(attrs["recent_points_24h"]), 512)
+        self.assertLessEqual(len(attrs["today_series"]), 512)
+        # decimation keeps chronological order
+        times = [iso for iso, _ in attrs["recent_points_24h"]]
+        self.assertEqual(times, sorted(times))
         # compact attrs survive: the spectrum map and per-day means are kept
         self.assertIn("channels_latest", attrs)
         self.assertIn("daily_mean_aod", attrs)

@@ -148,9 +148,17 @@ class TestSdaColumns(unittest.TestCase):
             self.assertLessEqual(v, 1.5)
 
     def test_latest_value_hours_window(self):
-        p = parsers.latest_value(self.data, parsers.SDA_FINE_SLOT, hours=24)
-        # Fixture's last row is 2026-07-10 17:25 UTC; window relative to last point.
+        # v0.7.0 (H3): the window is anchored on `now` instead of on the
+        # series' newest point, so a fresh point is inside it...
+        last = self.data.values[parsers.SDA_FINE_SLOT][-1].time
+        p = parsers.latest_value(self.data, parsers.SDA_FINE_SLOT, hours=24,
+                                 now=last + dt.timedelta(hours=1))
         self.assertIsNotNone(p)
+        # ...and a series older than the window reports None (unknown)
+        # instead of silently serving a stale value.
+        self.assertIsNone(parsers.latest_value(
+            self.data, parsers.SDA_FINE_SLOT, hours=24,
+            now=last + dt.timedelta(days=30)))
 
 
 class TestSsaVolColumns(unittest.TestCase):
@@ -240,7 +248,10 @@ class TestLast24hWindow(unittest.TestCase):
 class TestTodaySeries(unittest.TestCase):
     def test_today_series_covers_current_day(self):
         data = parsers.parse_data_csv(fixture("valladolid_aod_all.csv"))
-        series = parsers.today_series(data)
+        # v0.7.0 (H4): the day boundary is anchored on `now`; the fixture is
+        # a real payload from 2026-09-16, so anchor on its newest point.
+        last = data.points[-1].time
+        series = parsers.today_series(data, now=last)
         self.assertGreater(len(series), 0)
         last_day = data.points[-1].time.date()
         days = {iso[:10] for iso, _ in series}
@@ -249,6 +260,13 @@ class TestTodaySeries(unittest.TestCase):
         times = [iso for iso, _ in series]
         self.assertEqual(times, sorted(times))
         self.assertTrue(times[0].endswith("+00:00"))
+
+    def test_today_series_empty_for_a_stale_payload(self):
+        """A station whose last point was days ago has no 'today' series."""
+        data = parsers.parse_data_csv(fixture("valladolid_aod_all.csv"))
+        later = data.points[-1].time + dt.timedelta(days=5)
+        self.assertEqual(parsers.today_series(data, now=later), [])
+        self.assertEqual(parsers.recent_points(data, hours=24, now=later), [])
 
     def test_today_series_empty_when_no_points(self):
         self.assertEqual(parsers.today_series(parsers.AeronetData(

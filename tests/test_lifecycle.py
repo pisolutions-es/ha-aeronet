@@ -174,11 +174,12 @@ class FakeDataCoordinator:
     instances = []
 
     def __init__(self, hass, session, *, email="", level="", interval_min=60,
-                 site="", products=None, entry_id=""):
+                 site="", products=None, entry_id="", config_entry=None):
         self.hass = hass
         self.site = site
         self.entry_id = entry_id
         self.products = products or []
+        self.config_entry = config_entry
         self.data = None
         self.first_refresh_calls = 0
         self.shutdown_calls = 0
@@ -218,6 +219,9 @@ class GhostCoordinatorTests(unittest.TestCase):
         coordinators._sites_coordinators.clear()
         coordinators._shutdown_tasks.clear()
         aeronet._HELD_SITES.clear()
+        # v0.7.0 (review M6): the class swap in _env() is global; restore the
+        # real coordinator so later test modules do not inherit the fake.
+        aeronet.AeronetDataCoordinator = coordinators.AeronetDataCoordinator
 
     def _env(self):
         hass = FakeHass()
